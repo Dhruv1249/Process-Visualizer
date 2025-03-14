@@ -1,402 +1,366 @@
 import sys
-import psutil
 import math
-import GPUtil  # For GPU monitoring
-import numpy as np
-import os
-from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QPushButton, QListWidget, QStackedWidget,
-    QFormLayout, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
-    QHeaderView
+import psutil
+
+# For NVIDIA GPU usage (optional)
+try:
+    from pynvml import (
+        nvmlInit, nvmlShutdown,
+        nvmlDeviceGetCount, nvmlDeviceGetHandleByIndex,
+        nvmlDeviceGetUtilizationRates
+    )
+    NVML_AVAILABLE = True
+except ImportError:
+    NVML_AVAILABLE = False
+
+from PyQt5.QtCore import Qt, QRectF, QPointF, QTimer, QPropertyAnimation, QEasingCurve, pyqtSignal, pyqtProperty
+from PyQt5.QtGui import QPainter, QPen, QColor, QFont
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QGridLayout, QLabel, QPushButton
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont
-import qdarkstyle
-import pyqtgraph as pg
 
-class GaugeWidget(pg.PlotWidget):
-    """A custom speedometer-like gauge widget inspired by Ookla Speedtest."""
-    def __init__(self, title="Gauge", max_value=100, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.max_value = max_value
-        self.setTitle(title, color='w', size='12pt')
-        self.setAspectLocked(True)
-        self.hideAxis('bottom')
-        self.hideAxis('left')
-        self.setRange(xRange=(-1.2, 1.2), yRange=(-0.2, 1.2))
+from process_tab import ProcessTab 
 
-        # Background arc (full range, gray)
-        angles = np.linspace(180, 0, 100)  # Left (180°) to right (0°)
-        radians = np.radians(angles)
-        x = np.cos(radians)
-        y = np.sin(radians)
-        self.full_arc = pg.PlotCurveItem(x, y, pen=pg.mkPen(color=(50, 50, 50), width=4))
-        self.addItem(self.full_arc)
 
-        # Usage arc (dynamic, colored)
-        self.usage_arc = pg.PlotCurveItem([], [], pen=pg.mkPen(color=(0, 255, 0), width=4))
-        self.addItem(self.usage_arc)
+# Utility functions to get system usage metrics
+def get_cpu_usage_percent():
+    return psutil.cpu_percent(interval=None)
+
+def get_ram_usage_percent():
+    return psutil.virtual_memory().percent
+
+def get_disk_usage_percent(drive='C:'):
+    return psutil.disk_usage(drive).percent
+
+def get_nvidia_gpu_usage_percent(gpu_index=0):
+    if not NVML_AVAILABLE:
+        return 0
+    nvmlInit()
+    count = nvmlDeviceGetCount()
+    if gpu_index >= count:
+        nvmlShutdown()
+        return 0
+    handle = nvmlDeviceGetHandleByIndex(gpu_index)
+    util = nvmlDeviceGetUtilizationRates(handle)
+    nvmlShutdown()
+    return util.gpu  # 0..100
+
+sciFiFontName = "Conthrax"  # Replace with "Arial" if Conthrax is unavailable
+
+# Custom gauge widget with animation support
+class VerticalSemiGauge(QWidget):
+    """
+    Semi-circular gauge. Displays values from 0 to 100, top to bottom.
+    """
+    valueChanged = pyqtSignal(float)
+
+    def __init__(self, title="CPU Usage", parent=None):
+        super().__init__(parent)
+        self._value = 0.0
+        self._maxValue = 100.0
+        self.thickness = 25
+        self.margin = 100
+        self.setMinimumSize(500, 600)
+        self.title = title
+
+    def setValue(self, v):
+        v = max(0.0, min(self._maxValue, float(v)))
+        if v != self._value:
+            self._value = v
+            self.valueChanged.emit(self._value)
+            self.update()
+
+    def getValue(self):
+        return self._value
+
+    value = pyqtProperty(float, getValue, setValue, notify=valueChanged)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        rect = self.rect()
+        width = rect.width()
+        height = rect.height()
+        R = min(width, height) / 2 - self.margin
+        cx = rect.center().x()
+        cy = rect.center().y()
+
+        start_deg = 230
+        total_deg = -210
+        ratio = self._value / float(self._maxValue)
+        active_deg = ratio * total_deg
+
+        arcRect = QRectF(cx - R, cy - R, 2 * R, 2 * R)
+
+        # Background arc
+        pen_bg = QPen(QColor(80, 80, 80), self.thickness, cap=Qt.RoundCap)
+        painter.setPen(pen_bg)
+        painter.drawArc(arcRect, int(start_deg * 16), int(total_deg * 16))
+
+        # Active arc
+        pen_active = QPen(QColor(255, 255, 255), self.thickness, cap=Qt.RoundCap)
+        painter.setPen(pen_active)
+        painter.drawArc(arcRect, int(start_deg * 16), int(active_deg * 16))
 
         # Needle
-        self.needle = pg.PlotCurveItem([0, 0], [0, 0], pen=pg.mkPen('r', width=3))
-        self.addItem(self.needle)
+        needle_angle_deg = start_deg + active_deg
+        needle_angle_rad = math.radians(needle_angle_deg)
+        needle_len = R - self.thickness / 2 - 5
+        needle_start = QPointF(cx, cy)
+        needle_end = QPointF(
+            cx + needle_len * math.cos(needle_angle_rad),
+            cy - needle_len * math.sin(needle_angle_rad)
+        )
+        pen_needle = QPen(QColor(255, 0, 0), 3)
+        painter.setPen(pen_needle)
+        painter.drawLine(needle_start, needle_end)
 
-        # Center point
-        self.center = pg.ScatterPlotItem([0], [0], size=15, brush=pg.mkBrush(255, 0, 0))
-        self.addItem(self.center)
+        # Title
+        painter.setPen(QColor(255, 255, 255))
+        painter.setFont(QFont(sciFiFontName, 14, QFont.Bold))
+        painter.drawText(cx + 15, cy + 30, self.title)
 
-        # Tick marks and labels at 20% intervals
-        for i in range(0, 101, 20):
-            angle_deg = 180 - (180 * (i / 100))
-            angle_rad = math.radians(angle_deg)
-            x1 = 0.9 * math.cos(angle_rad)
-            y1 = 0.9 * math.sin(angle_rad)
-            x2 = 1.0 * math.cos(angle_rad)
-            y2 = 1.0 * math.sin(angle_rad)
-            tick = pg.PlotCurveItem([x1, x2], [y1, y2], pen=pg.mkPen('w', width=1))
-            self.addItem(tick)
-            label = pg.TextItem(text=str(i), color='w', anchor=(0.5, 0.5))
-            label.setPos(x2 * 1.1, y2 * 1.1)
-            self.addItem(label)
-
-        self.current_value = 0
-        self.update_gauge(0)
-
-    def update_gauge(self, value):
-        """Update the needle and usage arc based on the input value."""
-        self.current_value = min(max(value, 0), self.max_value)
-        value_percent = self.current_value / self.max_value
-
-        # Update usage arc
-        angles = np.linspace(180, 180 - (180 * value_percent), int(100 * value_percent))
-        radians = np.radians(angles)
-        x = np.cos(radians)
-        y = np.sin(radians)
-        self.usage_arc.setData(x, y)
-
-        # Color gradient: green (0%) to red (100%)
-        hue = 0.33 - (0.33 * value_percent)  # Green (0.33) to red (0)
-        color = pg.hsvColor(hue, 1, 1)
-        self.usage_arc.setPen(pg.mkPen(color, width=4))
-
-        # Update needle position
-        angle_rad = math.radians(180 - (180 * value_percent))
-        x = math.cos(angle_rad)
-        y = math.sin(angle_rad)
-        self.needle.setData([0, x], [0, y])
-
-class HomeDashboard(QWidget):
-    """System Monitor Dashboard with gauges and process table."""
-    def __init__(self):
-        super().__init__()
-        main_layout = QVBoxLayout(self)
-
-        # Section header for gauges
-        metrics_label = QLabel("System Metrics")
-        metrics_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        metrics_label.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
-        main_layout.addWidget(metrics_label)
-
-        # Horizontal layout for gauges
-        gauge_layout = QHBoxLayout()
-
-        # CPU Gauge
-        cpu_layout = QVBoxLayout()
-        self.cpu_gauge = GaugeWidget(title="CPU Usage (%)", max_value=100)
-        self.cpu_label = QLabel("0%")
-        self.cpu_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.cpu_label.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
-        cpu_layout.addWidget(self.cpu_gauge)
-        cpu_layout.addWidget(self.cpu_label)
-        gauge_layout.addLayout(cpu_layout)
-
-        # GPU Gauge
-        gpu_layout = QVBoxLayout()
-        self.gpu_gauge = GaugeWidget(title="GPU Usage (%)", max_value=100)
-        self.gpu_label = QLabel("0%")
-        self.gpu_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.gpu_label.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
-        gpu_layout.addWidget(self.gpu_gauge)
-        gpu_layout.addWidget(self.gpu_label)
-        gauge_layout.addLayout(gpu_layout)
-
-        # RAM Gauge
-        ram_layout = QVBoxLayout()
-        self.ram_gauge = GaugeWidget(title="RAM Usage (%)", max_value=100)
-        self.ram_label = QLabel("0%")
-        self.ram_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.ram_label.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
-        ram_layout.addWidget(self.ram_gauge)
-        ram_layout.addWidget(self.ram_label)
-        gauge_layout.addLayout(ram_layout)
-
-        # Disk Gauge
-        disk_layout = QVBoxLayout()
-        self.disk_gauge = GaugeWidget(title="Disk Usage (%)", max_value=100)
-        self.disk_label = QLabel("0%")
-        self.disk_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.disk_label.setStyleSheet("font-size: 16px; font-weight: bold; color: white;")
-        disk_layout.addWidget(self.disk_gauge)
-        disk_layout.addWidget(self.disk_label)
-        gauge_layout.addLayout(disk_layout)
-
-        main_layout.addLayout(gauge_layout)
-        main_layout.addSpacing(20)
-
-        # Section header for process table
-        processes_label = QLabel("Running Processes")
-        processes_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        processes_label.setStyleSheet("font-size: 18px; font-weight: bold; color: white;")
-        main_layout.addWidget(processes_label)
-
-        # Process table
-        self.process_table = QTableWidget()
-        self.process_table.setColumnCount(4)
-        self.process_table.setHorizontalHeaderLabels(["PID", "Name", "CPU %", "Mem %"])
-        self.process_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.process_table.setSortingEnabled(True)
-        self.process_table.setAlternatingRowColors(True)
-        self.process_table.setStyleSheet("QTableWidget {background-color: #2e2e2e; color: white; font: 10pt Arial;}")
-        main_layout.addWidget(self.process_table)
-
-        # Timer for periodic updates
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.update_stats)
-        self.timer.start(1500)  # Update every 1.5 seconds
-
-    def update_stats(self):
-        """Update gauges and labels with current system metrics."""
-        # Disk path for system drive
-        disk_path = 'C:\\' if os.name == 'nt' else '/'
-
-        # CPU Usage (system-wide)
-        cpu_usage = psutil.cpu_percent(interval=0.1)
-        self.cpu_gauge.update_gauge(cpu_usage)
-        self.cpu_label.setText(f"{cpu_usage:.1f}%")
-
-        # GPU Usage
-        try:
-            gpus = GPUtil.getGPUs()
-            gpu_usage = gpus[0].load * 100 if gpus else 0
-        except Exception:
-            gpu_usage = 0
-        self.gpu_gauge.update_gauge(gpu_usage)
-        self.gpu_label.setText(f"{gpu_usage:.1f}%")
-
-        # RAM Usage
-        ram_info = psutil.virtual_memory()
-        ram_percent = ram_info.percent
-        self.ram_gauge.update_gauge(ram_percent)
-        self.ram_label.setText(f"{ram_percent:.1f}%")
-
-        # Disk Usage
-        disk_info = psutil.disk_usage(disk_path)
-        disk_percent = disk_info.percent
-        self.disk_gauge.update_gauge(disk_percent)
-        self.disk_label.setText(f"{disk_percent:.1f}%")
-
-        self.update_process_table()
-
-    def update_process_table(self):
-        """Update the process table with the top 50 processes by CPU usage, excluding PID 0."""
-        self.process_table.setRowCount(0)
-        processes = []
-        cpu_count = psutil.cpu_count()
-        for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent']):
-            if proc.info['pid'] == 0:  # Exclude system idle process
-                continue
-            # Normalize CPU usage to match Task Manager (total CPU %)
-            cpu_percent = (proc.info['cpu_percent'] / cpu_count) if proc.info['cpu_percent'] is not None else 0.0
-            processes.append({
-                'pid': proc.info['pid'],
-                'name': proc.info['name'] or 'Unknown',
-                'cpu_percent': cpu_percent,
-                'memory_percent': proc.info['memory_percent'] or 0.0
-            })
-        processes.sort(key=lambda x: x['cpu_percent'], reverse=True)
-        for row_idx, info in enumerate(processes[:50]):
-            self.process_table.insertRow(row_idx)
-            self.process_table.setItem(row_idx, 0, QTableWidgetItem(str(info['pid'])))
-            self.process_table.setItem(row_idx, 1, QTableWidgetItem(info['name']))
-            self.process_table.setItem(row_idx, 2, QTableWidgetItem(f"{info['cpu_percent']:.1f}"))
-            self.process_table.setItem(row_idx, 3, QTableWidgetItem(f"{info['memory_percent']:.1f}"))
-
-class ProcessScheduling(QWidget):
-    """Process Scheduling page with polished table and Gantt chart."""
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout(self)
-
-        # Form for process input
-        form_layout = QFormLayout()
-        self.num_processes_input = QLineEdit("5")
-        self.algorithm_combo = QComboBox()
-        self.algorithm_combo.addItems(["FCFS", "SJF", "Round Robin"])
-        self.quantum_input = QLineEdit("2")
-        self.quantum_input.setEnabled(False)
-        self.algorithm_combo.currentTextChanged.connect(self.toggle_quantum)
-        form_layout.addRow("Number of Processes:", self.num_processes_input)
-        form_layout.addRow("Algorithm:", self.algorithm_combo)
-        form_layout.addRow("Time Quantum (RR):", self.quantum_input)
-        layout.addLayout(form_layout)
-
-        # Simulate button
-        self.simulate_btn = QPushButton("Simulate")
-        self.simulate_btn.clicked.connect(self.update_table_and_gantt)
-        layout.addWidget(self.simulate_btn)
-
-        # Process table
-        self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setHorizontalHeaderLabels(["PID", "Arrival Time", "Burst Time"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.table.setSortingEnabled(True)
-        self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet("QTableWidget {background-color: #2e2e2e; color: white; font: 10pt Arial;}")
-        layout.addWidget(self.table)
-
-        # Gantt chart
-        self.gantt_view = pg.PlotWidget(title="Gantt Chart")
-        self.gantt_view.setBackground('#1e1e1e')
-        self.gantt_view.showGrid(x=True, y=False)
-        layout.addWidget(self.gantt_view)
-
-    def toggle_quantum(self, text):
-        """Enable/disable time quantum input based on algorithm."""
-        self.quantum_input.setEnabled(text == "Round Robin")
-
-    def update_table_and_gantt(self):
-        """Simulate scheduling and update table and Gantt chart."""
-        try:
-            n = int(self.num_processes_input.text())
-            algorithm = self.algorithm_combo.currentText()
-            quantum = int(self.quantum_input.text()) if algorithm == "Round Robin" else None
-        except ValueError:
-            return
-
-        # Generate random processes
-        processes = [{'pid': i+1, 'arrival': np.random.randint(0, 10), 'burst': np.random.randint(1, 10)} for i in range(n)]
-        self.table.setRowCount(n)
-        for i, proc in enumerate(processes):
-            self.table.setItem(i, 0, QTableWidgetItem(str(proc['pid'])))
-            self.table.setItem(i, 1, QTableWidgetItem(str(proc['arrival'])))
-            self.table.setItem(i, 2, QTableWidgetItem(str(proc['burst'])))
-
-        # Simulate scheduling (simplified)
-        gantt_data = []
-        current_time = 0
-        remaining = processes.copy()
-        remaining.sort(key=lambda x: x['arrival'])
-
-        if algorithm == "FCFS":
-            for proc in sorted(processes, key=lambda x: x['arrival']):
-                start = max(current_time, proc['arrival'])
-                finish = start + proc['burst']
-                gantt_data.append((proc['pid'], start, finish))
-                current_time = finish
-        elif algorithm == "SJF":
-            while remaining:
-                available = [p for p in remaining if p['arrival'] <= current_time]
-                if not available:
-                    current_time += 1
-                    continue
-                proc = min(available, key=lambda x: x['burst'])
-                start = current_time
-                finish = start + proc['burst']
-                gantt_data.append((proc['pid'], start, finish))
-                current_time = finish
-                remaining.remove(proc)
-        elif algorithm == "Round Robin":
-            queue = []
-            remaining.sort(key=lambda x: x['arrival'])
-            arrivals = remaining.copy()
-            remaining_burst = {p['pid']: p['burst'] for p in processes}
-            while remaining_burst:
-                while arrivals and arrivals[0]['arrival'] <= current_time:
-                    queue.append(arrivals.pop(0))
-                if not queue:
-                    current_time += 1
-                    continue
-                proc = queue.pop(0)
-                start = current_time
-                time_slice = min(quantum, remaining_burst[proc['pid']])
-                finish = start + time_slice
-                gantt_data.append((proc['pid'], start, finish))
-                remaining_burst[proc['pid']] -= time_slice
-                current_time = finish
-                if remaining_burst[proc['pid']] > 0:
-                    queue.append(proc)
-                else:
-                    del remaining_burst[proc['pid']]
-
-        # Update Gantt chart with polished styling
-        self.gantt_view.clear()
-        colors = ['#ff5555', '#55ff55', '#5555ff', '#ffff55', '#ff55ff', '#55ffff']
-        y_base = 0
-        for pid, start, finish in gantt_data:
-            width = finish - start
-            color = colors[(pid - 1) % len(colors)]
-            rect = pg.BarGraphItem(x=[start], height=0.9, width=width, y=[y_base], brush=color)
-            self.gantt_view.addItem(rect)
-            text = pg.TextItem(text=f"P{pid}", color='w', anchor=(0.5, 0.5))
-            text.setPos(start + width / 2, y_base + 0.45)
-            self.gantt_view.addItem(text)
-            y_base += 1
-        self.gantt_view.setRange(yRange=(-0.5, y_base))
-
+# Main application window
 class MainWindow(QMainWindow):
-    """Main application window with navigation and polished UI."""
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Process Visualization Tool")
-        self.resize(1200, 800)
+        self.setWindowTitle("OS Process Visualizer")
+        self.setStyleSheet("background-color: #000000; color: #FFFFFF;")
 
-        # Main layout
-        main_widget = QWidget()
-        self.setCentralWidget(main_widget)
-        layout = QHBoxLayout(main_widget)
+        # Central widget
+        central = QWidget()
+        self.setCentralWidget(central)
+        central_layout = QHBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
 
-        # Navigation menu with polished styling
-        self.menu = QListWidget()
-        self.menu.addItems(["System Monitor", "Process Scheduling"])
-        self.menu.setStyleSheet("""
-            QListWidget {
-                background-color: #2e2e2e;
-                color: white;
-                font: 12pt Arial;
-                border: none;
-            }
-            QListWidget::item {
-                padding: 10px;
-            }
-            QListWidget::item:selected {
-                background-color: #5a5a5a;
-            }
-        """)
-        self.menu.setFixedWidth(200)
-        layout.addWidget(self.menu)
+        # Sidebar
+        self.menuFrame = QWidget()
+        self.menuFrame.setStyleSheet("background-color: #000000; font-family: Conthrax;")
+        self.menuFrame.setFixedWidth(280)
 
-        # Stacked widget for pages
-        self.pages = QStackedWidget()
-        self.pages.addWidget(HomeDashboard())
-        self.pages.addWidget(ProcessScheduling())
-        layout.addWidget(self.pages)
+        menuLayout = QVBoxLayout(self.menuFrame)
+        menuLayout.setContentsMargins(0, 0, 0, 0)
+        menuLayout.setSpacing(0)
 
-        # Connect menu to page switching
-        self.menu.currentRowChanged.connect(self.display_page)
+        menuHeader = QLabel("MENU")
+        menuHeader.setStyleSheet("color: white; font-size: 26px; padding: 18px;")
+        menuLayout.addWidget(menuHeader)
 
-    def display_page(self, index):
-        """Switch to the selected page."""
-        self.pages.setCurrentIndex(index)
+        # Tab buttons
+        self.btnOverview = QPushButton("Overview")
+        self.btnCPU = QPushButton("CPU")
+        self.btnGPU = QPushButton("GPU")
+        self.btnRAM = QPushButton("RAM")
+        self.btnDisk = QPushButton("Disk")
+        self.btnProcesses = QPushButton("Processes")
+        self.btnSched = QPushButton("Scheduling Algorithm")
 
-def main():
-    app = QApplication(sys.argv)
-    app.setStyleSheet(qdarkstyle.load_stylesheet())  # Apply dark theme
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+        self.tabButtons = [
+            self.btnOverview, self.btnCPU, self.btnGPU, self.btnRAM,
+            self.btnDisk, self.btnProcesses, self.btnSched
+        ]
+
+        for btn in self.tabButtons:
+            btn.setStyleSheet("""
+                QPushButton {
+                    color: #FFFFFF;
+                    font-size: 18px;
+                    text-align: left;
+                    padding: 10px 10px;
+                    border: none;
+                }
+                QPushButton:hover {
+                    background-color: #3A3A3A;
+                    border-left: 4px solid #00A2FF;
+                }
+            """)
+            menuLayout.addWidget(btn)
+
+        menuLayout.addStretch()
+        central_layout.addWidget(self.menuFrame)
+
+        # Separator
+        separator = QWidget()
+        separator.setFixedWidth(1)
+        separator.setStyleSheet("background-color: #FFFFFF;")
+        central_layout.addWidget(separator)
+
+        # Main content
+        main_content = QWidget()
+        main_layout = QVBoxLayout(main_content)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
+
+        # Header
+        header_layout = QHBoxLayout()
+        title_label = QLabel("OS Process Visualizer")
+        title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_font = QFont(sciFiFontName, 40, QFont.Bold)
+        title_label.setFont(title_font)
+        title_label.setStyleSheet("color: white; background-color: transparent;")
+        header_layout.addWidget(title_label)
+        header_layout.addStretch()
+        main_layout.addLayout(header_layout)
+
+        # Grid for gauges
+        grid = QGridLayout()
+
+        self.cpuGauge = VerticalSemiGauge("CPU Usage")
+        self.cpuLabel = QLabel("0.00%")
+        self.setupLabel(self.cpuLabel)
+        cpuPanel = QWidget()
+        cpuLayout = QVBoxLayout(cpuPanel)
+        cpuLayout.setContentsMargins(0, 0, 0, 0)
+        cpuLayout.setSpacing(5)
+        cpuLayout.addWidget(self.cpuGauge)
+        cpuLayout.addWidget(self.cpuLabel, alignment=Qt.AlignHCenter)
+        grid.addWidget(cpuPanel, 0, 0, alignment=Qt.AlignCenter)
+
+        self.ramGauge = VerticalSemiGauge("RAM Usage")
+        self.ramLabel = QLabel("0.00%")
+        self.setupLabel(self.ramLabel)
+        ramPanel = QWidget()
+        ramLayout = QVBoxLayout(ramPanel)
+        ramLayout.setContentsMargins(0, 0, 0, 0)
+        ramLayout.setSpacing(5)
+        ramLayout.addWidget(self.ramGauge)
+        ramLayout.addWidget(self.ramLabel, alignment=Qt.AlignHCenter)
+        grid.addWidget(ramPanel, 0, 1, alignment=Qt.AlignCenter)
+
+        self.gpuGauge = VerticalSemiGauge("GPU Usage")
+        self.gpuLabel = QLabel("0.00%")
+        self.setupLabel(self.gpuLabel)
+        gpuPanel = QWidget()
+        gpuLayout = QVBoxLayout(gpuPanel)
+        gpuLayout.setContentsMargins(0, 0, 0, 0)
+        gpuLayout.setSpacing(5)
+        gpuLayout.addWidget(self.gpuGauge)
+        gpuLayout.addWidget(self.gpuLabel, alignment=Qt.AlignHCenter)
+        grid.addWidget(gpuPanel, 1, 0, alignment=Qt.AlignCenter)
+
+        self.diskGauge = VerticalSemiGauge("Disk Usage (C:)")
+        self.diskLabel = QLabel("0.00%")
+        self.setupLabel(self.diskLabel)
+        diskPanel = QWidget()
+        diskLayout = QVBoxLayout(diskPanel)
+        diskLayout.setContentsMargins(0, 0, 0, 0)
+        diskLayout.setSpacing(5)
+        diskLayout.addWidget(self.diskGauge)
+        diskLayout.addWidget(self.diskLabel, alignment=Qt.AlignHCenter)
+        grid.addWidget(diskPanel, 1, 1, alignment=Qt.AlignCenter)
+
+        main_layout.addLayout(grid, stretch=1)
+        central_layout.addWidget(main_content, stretch=1)
+
+        # Connect signals
+        self.cpuGauge.valueChanged.connect(lambda v: self.cpuLabel.setText(f"{v:.2f}%"))
+        self.ramGauge.valueChanged.connect(lambda v: self.ramLabel.setText(f"{v:.2f}%"))
+        self.gpuGauge.valueChanged.connect(lambda v: self.gpuLabel.setText(f"{v:.2f}%"))
+        self.diskGauge.valueChanged.connect(lambda v: self.diskLabel.setText(f"{v:.2f}%"))
+
+        # Initialize tab
+        self.currentTab = self.btnOverview
+        self.updateTabStyles()
+
+        # Connect tab buttons
+        for btn in self.tabButtons:
+            btn.clicked.connect(lambda checked, b=btn: self.setCurrentTab(b))
+
+        # Timer for updates
+        self.timer = QTimer(self)
+        self.timer.setInterval(2000)
+        self.timer.timeout.connect(self.updateUsages)
+        self.timer.start()
+
+    def setupLabel(self, label):
+        label.setAlignment(Qt.AlignCenter)
+        label.setFont(QFont(sciFiFontName, 20, QFont.Bold))
+        label.setStyleSheet("color: white;")
+
+    def updateTabStyles(self):
+        for btn in self.tabButtons:
+            if btn == self.currentTab:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        color: #FFFFFF;
+                        font-size: 18px;
+                        text-align: left;
+                        padding: 10px 10px;
+                        border: none;
+                        background-color: #1A1A1A;
+                        border-left: 4px solid #00A2FF;
+                    }
+                """)
+            else:
+                btn.setStyleSheet("""
+                    QPushButton {
+                        color: #FFFFFF;
+                        font-size: 18px;
+                        text-align: left;
+                        padding: 10px 10px;
+                        border: none;
+                    }
+                    QPushButton:hover {
+                        background-color: #3A3A3A;
+                        border-left: 4px solid #00A2FF;
+                    }
+                """)
+
+    def setCurrentTab(self, btn):
+        self.currentTab = btn
+        self.updateTabStyles()
+
+    def updateUsages(self):
+        print("updating")
+        # *** Keep references to avoid garbage collection ***
+        if not hasattr(self, '_animRefs'):
+            self._animRefs = []
+
+        # CPU
+        cpu_val = get_cpu_usage_percent()
+        animation_cpu = QPropertyAnimation(self.cpuGauge, b"value")
+        animation_cpu.setStartValue(self.cpuGauge.value)
+        animation_cpu.setEndValue(cpu_val)
+        animation_cpu.setDuration(3000)
+        animation_cpu.setEasingCurve(QEasingCurve.Linear)
+        animation_cpu.start(QPropertyAnimation.DeleteWhenStopped)
+        self._animRefs.append(animation_cpu)  # keep reference
+
+        # RAM
+        ram_val = get_ram_usage_percent()
+        animation_ram = QPropertyAnimation(self.ramGauge, b"value")
+        animation_ram.setStartValue(self.ramGauge.value)
+        animation_ram.setEndValue(ram_val)
+        animation_ram.setDuration(3000)
+        animation_ram.setEasingCurve(QEasingCurve.Linear)
+        animation_ram.start(QPropertyAnimation.DeleteWhenStopped)
+        self._animRefs.append(animation_ram)
+
+        # GPU
+        gpu_val = get_nvidia_gpu_usage_percent(0)
+        animation_gpu = QPropertyAnimation(self.gpuGauge, b"value")
+        animation_gpu.setStartValue(self.gpuGauge.value)
+        animation_gpu.setEndValue(gpu_val)
+        animation_gpu.setDuration(3000)
+        animation_gpu.setEasingCurve(QEasingCurve.Linear)
+        animation_gpu.start(QPropertyAnimation.DeleteWhenStopped)
+        self._animRefs.append(animation_gpu)
+
+        # Disk
+        disk_val = get_disk_usage_percent("C:")
+        animation_disk = QPropertyAnimation(self.diskGauge, b"value")
+        animation_disk.setStartValue(self.diskGauge.value)
+        animation_disk.setEndValue(disk_val)
+        animation_disk.setDuration(3000)
+        animation_disk.setEasingCurve(QEasingCurve.Linear)
+        animation_disk.start(QPropertyAnimation.DeleteWhenStopped)
+        self._animRefs.append(animation_disk)
 
 if __name__ == "__main__":
-    main()
-    
+    app = QApplication(sys.argv)
+    w = MainWindow()
+    w.showMaximized()
+    sys.exit(app.exec_())
