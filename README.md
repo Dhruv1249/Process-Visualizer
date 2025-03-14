@@ -22,4 +22,4 @@ The **Process Visualization Tool** is a Python-based desktop application designe
 To run the Process Visualization Tool, install the required Python libraries using the following command:
 
 ```bash
-pip install pyqt6 psutil qdarkstyle pyqtgraph numpy GPUtil
+pip install -r requiremnt.txt
