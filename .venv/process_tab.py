@@ -1,14 +1,73 @@
-# process_tab.py
 import psutil
 import math
+import time
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QStyleOption, QStyle
 )
 from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint, QThread, pyqtSignal
 
 sciFiFontName = "Conthrax"
+
+# --------------------- Background Worker Thread for Process Data ---------------------
+class ProcessDataWorker(QThread):
+    """Worker thread to fetch process data without blocking the UI"""
+    dataReady = pyqtSignal(list)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.running = True
+        self.paused = False
+    
+    def run(self):
+        while self.running:
+            if not self.paused:
+                try:
+                    results = []
+                    # Use batch processing with pre-fetched info to reduce overhead
+                    for proc_info in psutil.process_iter(['pid', 'name', 'cpu_percent']):
+                        try:
+                            pName = proc_info.info['name'] or "Unknown"
+                            if pName.lower() in ["system idle process", "idle"]:
+                                continue
+                            pCPU = proc_info.info['cpu_percent'] or 0.0
+                            
+                            # Only get memory info for processes with significant CPU usage
+                            # This greatly reduces the number of expensive system calls
+                            if pCPU > 0.1:  # Only get memory for processes using CPU
+                                try:
+                                    p = psutil.Process(proc_info.info['pid'])
+                                    memMB = p.memory_info().rss / (1024*1024)
+                                except:
+                                    memMB = 0.0
+                            else:
+                                memMB = 0.0
+                                
+                            results.append((pName, pCPU, memMB))
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    
+                    # Emit the results
+                    self.dataReady.emit(results)
+                except Exception as e:
+                    print(f"Error in process data worker: {e}")
+                
+                # Sleep to prevent excessive CPU usage
+                time.sleep(2)  # 2 second interval between updates
+            else:
+                # When paused, just check occasionally if we're still paused
+                time.sleep(0.5)
+    
+    def pause(self):
+        self.paused = True
+    
+    def resume(self):
+        self.paused = False
+    
+    def stop(self):
+        self.running = False
+        self.wait()
 
 # --------------------- A Custom Widget for the CPU Bar Graph ---------------------
 class CPUBarGraphWidget(QWidget):
@@ -20,11 +79,11 @@ class CPUBarGraphWidget(QWidget):
         self.animFrac = 1.0  # Animation fraction (0 to 1)
         self.animationActive = False
         
-        # Animation parameters
-        self.ANIM_DURATION = 1000  # Duration in milliseconds (faster for dramatic effect)
-        self.FPS_INTERVAL = 16  # ~60 FPS
+        # Animation parameters - reduced for better performance
+        self.ANIM_DURATION = 500  # Reduced from 1000ms to 500ms
+        self.FPS_INTERVAL = 33  # ~30 FPS (reduced from 60 FPS)
         self.waveTime = 0.0  # For wave effect
-        self.waveSpeed = 2.0
+        self.waveSpeed = 1.0  # Reduced from 2.0
         
         # Transition states
         self.transitions = {}  # {name: {'startPos': int, 'endPos': int, 'zScale': float, 'currentPos': float}}
@@ -35,9 +94,24 @@ class CPUBarGraphWidget(QWidget):
         self.animTimer.start(self.FPS_INTERVAL)
         
         self.setMinimumSize(400, 300)
+        
+        # Performance optimization: track if widget is visible
+        self.isVisible = False
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.isVisible = True
+    
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self.isVisible = False
 
     def setData(self, data):
         """Update CPU data and prepare animations."""
+        # Skip if not visible
+        if not self.isVisible:
+            return
+            
         if not self.oldData:
             self.oldData = [(name, usage, i) for i, (name, usage) in enumerate(data[:10])]
         self.newData = [(name, usage, i) for i, (name, usage) in enumerate(data[:10])]
@@ -63,6 +137,10 @@ class CPUBarGraphWidget(QWidget):
 
     def onAnimFrame(self):
         """Update animation state."""
+        # Skip if not visible
+        if not self.isVisible:
+            return
+            
         step = self.FPS_INTERVAL / 1000.0
         self.waveTime += step * self.waveSpeed
         
@@ -90,6 +168,10 @@ class CPUBarGraphWidget(QWidget):
 
     def paintEvent(self, event):
         """Render the bar graph with z-axis animation."""
+        # Skip if not visible or no data
+        if not self.isVisible or (not self.oldData and not self.newData):
+            return
+            
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect()
@@ -167,11 +249,21 @@ class ProcessTab(QWidget):
         super().__init__(parent)
 
         self.currentSubTab = None
+        self.isVisible = False
+        self.processData = []  # Cache for process data
+        self.lastUpdateTime = 0  # Track when we last updated
+        self.updatePending = False  # Flag to prevent multiple updates
+        
+        # Create the background worker thread
+        self.dataWorker = ProcessDataWorker()
+        self.dataWorker.dataReady.connect(self.onProcessDataReady)
+        self.dataWorker.start()
 
-        # Timer to refresh the process list & CPU graph every 2 seconds
-        self.updateTimer = QTimer(self)
-        self.updateTimer.setInterval(2000)
-        self.updateTimer.timeout.connect(self.refreshProcessList)
+        # Timer for UI updates - separate from data collection
+        self.uiUpdateTimer = QTimer(self)
+        self.uiUpdateTimer.setInterval(500)  # Update UI at most every 500ms
+        self.uiUpdateTimer.timeout.connect(self.updateUI)
+        self.uiUpdateTimer.start()
 
         # Styles for the top sub-sub-tab buttons (List, Graph)
         self.styleNormal = f"""
@@ -246,8 +338,43 @@ class ProcessTab(QWidget):
         # Default to "List" sub-sub-tab
         self.setCurrentSubTab(self.btnList)
 
-        # Start the timer
-        self.updateTimer.start()
+    def showEvent(self, event):
+        """Called when the widget becomes visible"""
+        super().showEvent(event)
+        self.isVisible = True
+        # Resume the worker thread
+        self.dataWorker.resume()
+
+    def hideEvent(self, event):
+        """Called when the widget is hidden"""
+        super().hideEvent(event)
+        self.isVisible = False
+        # Pause the worker thread to save resources
+        self.dataWorker.pause()
+
+    def closeEvent(self, event):
+        """Clean up resources when the widget is closed"""
+        self.dataWorker.stop()
+        super().closeEvent(event)
+
+    def onProcessDataReady(self, data):
+        """Receive data from the worker thread"""
+        self.processData = data
+        self.updatePending = True
+        # The actual UI update will happen in updateUI
+
+    def updateUI(self):
+        """Update the UI with the latest data"""
+        if not self.isVisible or not self.updatePending:
+            return
+            
+        self.updatePending = False
+        
+        # Update the appropriate view based on what's visible
+        if self.currentSubTab == self.btnList:
+            self.populateTable()
+        elif self.currentSubTab == self.btnGraph and self.currentGraphSubTab == self.btnCPUGraph:
+            self.updateCPUGraph()
 
     # -------------------- PART 1: The "List" Sub-Sub-Tab --------------------
     def buildListUI(self):
@@ -307,36 +434,28 @@ class ProcessTab(QWidget):
         self.table.verticalHeader().hide()
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setFont(QFont(sciFiFontName, 12))
+        
+        # Performance optimization: set row count once to a reasonable size
+        # This prevents constant resizing which is expensive
+        self.table.setRowCount(50)
+        
         layout.addWidget(self.table)
 
         self.btnColProcess.clicked.connect(lambda: self.sortDataBy("process"))
         self.btnColCPU.clicked.connect(lambda: self.sortDataBy("cpu"))
         self.btnColRAM.clicked.connect(lambda: self.sortDataBy("ram"))
 
-        self.processData = self.fetchProcessData()
         self.sortKey = "cpu"
         self.sortDescending = True
-        self.populateTable()
         self.btnColCPU.setChecked(True)
 
         return container
 
-    def fetchProcessData(self):
-        results = []
-        for proc_info in psutil.process_iter(['pid','name','cpu_percent']):
-            try:
-                pName = proc_info.info['name'] or "Unknown"
-                if pName.lower() in ["system idle process", "idle"]:
-                    continue
-                pCPU = proc_info.info['cpu_percent'] or 0.0
-                p = psutil.Process(proc_info.info['pid'])
-                memMB = p.memory_info().rss / (1024*1024)
-                results.append((pName, pCPU, memMB))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-        return results
-
     def populateTable(self):
+        """Update the table with the cached process data"""
+        if not self.processData or not self.isVisible:
+            return
+            
         if self.sortKey == "process":
             idx = 0
             self.sortDescending = False
@@ -350,23 +469,43 @@ class ProcessTab(QWidget):
             idx = 1
             self.sortDescending = True
 
-        self.processData.sort(key=lambda x: x[idx], reverse=self.sortDescending)
-        self.table.setRowCount(len(self.processData))
-        for row, (pName, pCPU, pRAM) in enumerate(self.processData):
-            itemName = QTableWidgetItem(str(pName))
-            itemName.setFont(QFont(sciFiFontName, 12))
-            itemName.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            self.table.setItem(row, 0, itemName)
+        # Sort data
+        sorted_data = sorted(self.processData, key=lambda x: x[idx], reverse=self.sortDescending)
+        
+        # Limit to top 50 processes for performance
+        sorted_data = sorted_data[:50]
+        
+        # Only update the table if it's visible
+        if self.currentSubTab == self.btnList and self.isVisible:
+            # Performance optimization: only set row count if it changed
+            if self.table.rowCount() != len(sorted_data):
+                self.table.setRowCount(len(sorted_data))
+                
+            # Update table in batches for smoother UI
+            for row, (pName, pCPU, pRAM) in enumerate(sorted_data):
+                # Only update cells if values changed
+                current_name = self.table.item(row, 0)
+                if not current_name or current_name.text() != str(pName):
+                    itemName = QTableWidgetItem(str(pName))
+                    itemName.setFont(QFont(sciFiFontName, 12))
+                    itemName.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                    self.table.setItem(row, 0, itemName)
 
-            itemCPU = QTableWidgetItem(f"{pCPU:.1f}%")
-            itemCPU.setFont(QFont(sciFiFontName, 12))
-            itemCPU.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 1, itemCPU)
+                current_cpu = self.table.item(row, 1)
+                cpu_text = f"{pCPU:.1f}%"
+                if not current_cpu or current_cpu.text() != cpu_text:
+                    itemCPU = QTableWidgetItem(cpu_text)
+                    itemCPU.setFont(QFont(sciFiFontName, 12))
+                    itemCPU.setTextAlignment(Qt.AlignCenter)
+                    self.table.setItem(row, 1, itemCPU)
 
-            itemRAM = QTableWidgetItem(f"{pRAM:.1f}MB")
-            itemRAM.setFont(QFont(sciFiFontName, 12))
-            itemRAM.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 2, itemRAM)
+                current_ram = self.table.item(row, 2)
+                ram_text = f"{pRAM:.1f}MB"
+                if not current_ram or current_ram.text() != ram_text:
+                    itemRAM = QTableWidgetItem(ram_text)
+                    itemRAM.setFont(QFont(sciFiFontName, 12))
+                    itemRAM.setTextAlignment(Qt.AlignCenter)
+                    self.table.setItem(row, 2, itemRAM)
 
     def sortDataBy(self, key):
         for b in self.colButtons:
@@ -479,6 +618,9 @@ class ProcessTab(QWidget):
 
         if btn == self.btnCPUGraph:
             self.graphSubContentLayout.addWidget(self.cpuBarGraphWidget)
+            # Update the CPU graph with current data if we have it
+            if self.processData and self.isVisible:
+                self.updateCPUGraph()
         else:
             self.graphSubContentLayout.addWidget(self.ramGraphWidget)
 
@@ -504,8 +646,14 @@ class ProcessTab(QWidget):
 
         if btn == self.btnList:
             self.subContentLayout.addWidget(self.listWidget)
+            # Update the table with current data if we have it
+            if self.processData and self.isVisible:
+                self.populateTable()
         else:
             self.subContentLayout.addWidget(self.graphWidget)
+            # Update the CPU graph with current data if we have it
+            if self.processData and self.isVisible and self.currentGraphSubTab == self.btnCPUGraph:
+                self.updateCPUGraph()
 
     def updateSubTabStyles(self):
         if self.currentSubTab == self.btnList:
@@ -515,40 +663,15 @@ class ProcessTab(QWidget):
             self.btnList.setStyleSheet(self.styleNormal)
             self.btnGraph.setStyleSheet(self.styleSelected)
 
-    # -------------------- PART 4: Refreshing the 'List' & 'CPU Graph' --------------------
-    def refreshProcessList(self):
-        """
-        Called every 2 seconds by the QTimer.
-        1) If we're on the 'List' sub-sub-tab, re-fetch process data & re-populate table.
-        2) If we're on 'Graph' -> 'CPU' sub-sub-sub-tab, fetch top-10 CPU usage, pass to cpuBarGraphWidget.
-        """
-        # 1) If 'List' is active, update the table
-        if self.currentSubTab == self.btnList:
-            self.processData = self.fetchProcessData()
-            self.populateTable()
-
-        # 2) If 'Graph' is active, check if 'CPU' sub-sub-sub-tab is active
-        if self.currentSubTab == self.btnGraph and self.currentGraphSubTab == self.btnCPUGraph:
-            top10 = self.fetchTop10CPU()
-            self.cpuBarGraphWidget.setData(top10)
-
-    def fetchTop10CPU(self):
-        """
-        Returns a sorted list of top 10 (pName, pCPU) by CPU usage.
-        """
-        data = []
-        for proc_info in psutil.process_iter(['pid','name','cpu_percent']):
-            try:
-                pName = proc_info.info['name'] or "Unknown"
-                if pName.lower() in ["system idle process", "idle"]:
-                    continue
-                pCPU = proc_info.info['cpu_percent'] or 0.0
-                data.append((pName, pCPU))
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
+    # -------------------- PART 4: Updating the 'CPU Graph' --------------------
+    def updateCPUGraph(self):
+        """Update the CPU graph with the top 10 processes by CPU usage"""
+        if not self.processData or not self.isVisible:
+            return
+            
+        # Extract just the name and CPU usage, sort by CPU usage
+        cpu_data = [(name, cpu) for name, cpu, _ in self.processData]
+        cpu_data.sort(key=lambda x: x[1], reverse=True)
         
-
-        # sort descending by CPU
-        data.sort(key=lambda x: x[1], reverse=True)
-        return data[:10]
-    
+        # Pass the top 10 to the graph widget
+        self.cpuBarGraphWidget.setData(cpu_data[:10])
