@@ -353,6 +353,10 @@ class MainWindow(QMainWindow):
         self.stacked.setCurrentIndex(index)
         self.currentTab = button
         self.updateTabStyles()
+        if index == 0:  # Overview tab
+            self.timer.start()
+        else:
+            self.timer.stop()
 
     def updateUsages(self):
         if not hasattr(self, '_animRefs'):
