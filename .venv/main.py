@@ -14,18 +14,24 @@ except ImportError:
     NVML_AVAILABLE = False
 
 from PyQt5.QtCore import (
-    Qt, QRectF, QPointF, QTimer, QPropertyAnimation,
-    QEasingCurve, QEvent, pyqtSignal, pyqtProperty
+    Qt, QRectF, QPointF, QTimer, QPropertyAnimation, 
+    QEasingCurve, pyqtSignal, pyqtProperty
 )
 from PyQt5.QtGui import QPainter, QPen, QColor, QFont
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QGridLayout, QLabel, QPushButton
+    QGridLayout, QLabel, QPushButton, QStackedWidget  # <-- ADDED QStackedWidget
 )
 
-from process_tab import ProcessTab  # <-- If you have a separate file for process tab
+# ---------------- NEW IMPORTS FOR TABS ----------------
+from cpu_tab import CpuTab
+from gpu_tab import GpuTab
+from ram_tab import RamTab
+from disk_tab import DiskTab
+from process_tab import ProcessTab
+from scheduling_tab import SchedulingTab
+# ------------------------------------------------------
 
-# Utility functions to get system usage metrics
 def get_cpu_usage_percent():
     return psutil.cpu_percent(interval=None)
 
@@ -50,7 +56,6 @@ def get_nvidia_gpu_usage_percent(gpu_index=0):
 
 sciFiFontName = "Conthrax"  # Replace with "Arial" if Conthrax is unavailable
 
-# Custom gauge widget with animation support
 class VerticalSemiGauge(QWidget):
     """
     Semi-circular gauge. Displays values from 0 to 100, top to bottom.
@@ -96,17 +101,14 @@ class VerticalSemiGauge(QWidget):
 
         arcRect = QRectF(cx - R, cy - R, 2 * R, 2 * R)
 
-        # Background arc
         pen_bg = QPen(QColor(80, 80, 80), self.thickness, cap=Qt.RoundCap)
         painter.setPen(pen_bg)
         painter.drawArc(arcRect, int(start_deg * 16), int(total_deg * 16))
 
-        # Active arc
         pen_active = QPen(QColor(255, 255, 255), self.thickness, cap=Qt.RoundCap)
         painter.setPen(pen_active)
         painter.drawArc(arcRect, int(start_deg * 16), int(active_deg * 16))
 
-        # Needle
         needle_angle_deg = start_deg + active_deg
         needle_angle_rad = math.radians(needle_angle_deg)
         needle_len = R - self.thickness / 2 - 5
@@ -119,19 +121,16 @@ class VerticalSemiGauge(QWidget):
         painter.setPen(pen_needle)
         painter.drawLine(needle_start, needle_end)
 
-        # Title
         painter.setPen(QColor(255, 255, 255))
         painter.setFont(QFont(sciFiFontName, 14, QFont.Bold))
         painter.drawText(cx + 15, cy + 30, self.title)
 
-# Main application window
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OS Process Visualizer")
         self.setStyleSheet("background-color: #000000; color: #FFFFFF;")
 
-        # Central widget
         central = QWidget()
         self.setCentralWidget(central)
         central_layout = QHBoxLayout(central)
@@ -151,7 +150,6 @@ class MainWindow(QMainWindow):
         menuHeader.setStyleSheet("color: white; font-size: 26px; padding: 18px;")
         menuLayout.addWidget(menuHeader)
 
-        # Tab buttons
         self.btnOverview = QPushButton("Overview")
         self.btnCPU = QPushButton("CPU")
         self.btnGPU = QPushButton("GPU")
@@ -190,17 +188,17 @@ class MainWindow(QMainWindow):
         separator.setStyleSheet("background-color: #FFFFFF;")
         central_layout.addWidget(separator)
 
-        from PyQt5.QtWidgets import QStackedWidget
+        # ------------------- Create QStackedWidget to hold all tabs -------------------
         self.stacked = QStackedWidget()
         central_layout.addWidget(self.stacked, stretch=1)
 
-        # 1) Create the "overview" widget:
+        # 1) Create the Overview tab with the gauges
         self.overviewWidget = QWidget()
         overviewLayout = QVBoxLayout(self.overviewWidget)
         overviewLayout.setContentsMargins(20, 20, 20, 20)
         overviewLayout.setSpacing(20)
 
-        # Header
+        # Overview header
         header_layout = QHBoxLayout()
         title_label = QLabel("OS Process Visualizer")
         title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -211,8 +209,9 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
         overviewLayout.addLayout(header_layout)
 
-        # The gauge grid
+        # Gauges grid
         grid = QGridLayout()
+
         self.cpuGauge = VerticalSemiGauge("CPU Usage")
         self.cpuLabel = QLabel("0.00%")
         self.setupLabel(self.cpuLabel)
@@ -258,37 +257,62 @@ class MainWindow(QMainWindow):
         grid.addWidget(diskPanel, 1, 1, alignment=Qt.AlignCenter)
 
         overviewLayout.addLayout(grid, stretch=1)
+        # Add overviewWidget as index 0
+        self.stacked.addWidget(self.overviewWidget)
 
-        # 2) Create the "Processes" widget:
-        self.processWidget = ProcessTab(self)  # from process_tab.py
-        # If you want a placeholder: self.processWidget = QWidget()
+        # 2) CPU tab
+        self.cpuTab = CpuTab(self)
+        self.stacked.addWidget(self.cpuTab)
 
-        # 3) Add both to the stacked widget:
-        self.stacked.addWidget(self.overviewWidget)  # index 0
-        self.stacked.addWidget(self.processWidget)   # index 1
+        # 3) GPU tab
+        from gpu_tab import GpuTab  # you already have it above, but just in case
+        self.gpuTab = GpuTab(self)
+        self.stacked.addWidget(self.gpuTab)
 
-        # Connect signals
+        # 4) RAM tab
+        from ram_tab import RamTab
+        self.ramTab = RamTab(self)
+        self.stacked.addWidget(self.ramTab)
+
+        # 5) Disk tab
+        from disk_tab import DiskTab
+        self.diskTab = DiskTab(self)
+        self.stacked.addWidget(self.diskTab)
+
+        # 6) Processes tab (not in your list, but your code references it)
+        from process_tab import ProcessTab
+        self.processTab = ProcessTab(self)
+        self.stacked.addWidget(self.processTab)
+
+        # 7) Scheduling tab
+        from scheduling_tab import SchedulingTab
+        self.schedTab = SchedulingTab(self)
+        self.stacked.addWidget(self.schedTab)
+
+        # Connect signals for the gauge
         self.cpuGauge.valueChanged.connect(lambda v: self.cpuLabel.setText(f"{v:.2f}%"))
         self.ramGauge.valueChanged.connect(lambda v: self.ramLabel.setText(f"{v:.2f}%"))
         self.gpuGauge.valueChanged.connect(lambda v: self.gpuLabel.setText(f"{v:.2f}%"))
         self.diskGauge.valueChanged.connect(lambda v: self.diskLabel.setText(f"{v:.2f}%"))
 
+        # The currently selected tab is "Overview"
         self.currentTab = self.btnOverview
         self.updateTabStyles()
 
-        for btn in self.tabButtons:
-            btn.clicked.connect(lambda checked, b=btn: self.setCurrentTab(b))
+        # Connect tab buttons => each sets the stacked index
+        self.btnOverview.clicked.connect(lambda: self.showTab(0, self.btnOverview))
+        self.btnCPU.clicked.connect(lambda: self.showTab(1, self.btnCPU))
+        self.btnGPU.clicked.connect(lambda: self.showTab(2, self.btnGPU))
+        self.btnRAM.clicked.connect(lambda: self.showTab(3, self.btnRAM))
+        self.btnDisk.clicked.connect(lambda: self.showTab(4, self.btnDisk))
+        self.btnProcesses.clicked.connect(lambda: self.showTab(5, self.btnProcesses))
+        self.btnSched.clicked.connect(lambda: self.showTab(6, self.btnSched))
 
-        # Timer for updates
+        # Timer for usage updates
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
         self.timer.timeout.connect(self.updateUsages)
         self.timer.start()
-
-        # Make "Processes" show the second tab:
-        self.btnProcesses.clicked.connect(self.showProcessTab)
-        # Also "Overview" shows first tab:
-        #self.btnOverview.clicked.connect(self.showOverviewTab)
 
     def setupLabel(self, label):
         label.setAlignment(Qt.AlignCenter)
@@ -324,24 +348,13 @@ class MainWindow(QMainWindow):
                     }
                 """)
 
-    def setCurrentTab(self, btn):
-        self.currentTab = btn
+    # NEW function for switching tabs in the stacked widget
+    def showTab(self, index, button):
+        self.stacked.setCurrentIndex(index)
+        self.currentTab = button
         self.updateTabStyles()
-        
-
-    # NEW function to show processes tab
-    def showProcessTab(self):
-        self.setCurrentTab(self.btnProcesses)
-        self.stacked.setCurrentIndex(1)
-
-    # NEW function to show overview
-    def showOverviewTab(self):
-        self.setCurrentTab(self.btnOverview)
-        self.stacked.setCurrentIndex(0)
 
     def updateUsages(self):
-        print("updating")
-        # *** Keep references to avoid garbage collection ***
         if not hasattr(self, '_animRefs'):
             self._animRefs = []
 
@@ -353,7 +366,7 @@ class MainWindow(QMainWindow):
         animation_cpu.setDuration(3000)
         animation_cpu.setEasingCurve(QEasingCurve.Linear)
         animation_cpu.start(QPropertyAnimation.DeleteWhenStopped)
-        self._animRefs.append(animation_cpu)  # keep reference
+        self._animRefs.append(animation_cpu)
 
         # RAM
         ram_val = get_ram_usage_percent()
@@ -384,8 +397,6 @@ class MainWindow(QMainWindow):
         animation_disk.setEasingCurve(QEasingCurve.Linear)
         animation_disk.start(QPropertyAnimation.DeleteWhenStopped)
         self._animRefs.append(animation_disk)
-
-    
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
