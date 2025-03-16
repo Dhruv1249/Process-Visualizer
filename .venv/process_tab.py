@@ -1,5 +1,6 @@
 # process_tab.py
 import psutil
+import math
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView
@@ -12,60 +13,176 @@ sciFiFontName = "Conthrax"
 # --------------------- A Custom Widget for the CPU Bar Graph ---------------------
 class CPUBarGraphWidget(QWidget):
     """
-    A custom widget that draws a sideways bar graph of top-10 processes by CPU usage.
-    - Each bar has rounded edges and a blue fill.
-    - The data is a list of (processName, cpuPercent).
-    - We'll update it every 2 seconds from the parent 'ProcessTab'.
+    A custom widget that draws a sideways bar graph of top-10 processes by CPU usage,
+    with two animations:
+      1) A 2-second usage interpolation from old usage to new usage (60 FPS).
+      2) A continuous bounce (bars move up & down in sync) like the 'gas gas meme'.
+
+    We also:
+      - reduce bar length by 20% (multiplying by 0.8).
+      - truncate process names to 7 letters + '...'.
+      - make bars thinner by adjusting barHeight.
+
+    Usage:
+      * In your refresh code: cpuBarGraphWidget.setData(newTop10)
+        The widget will animate usage changes and bounce indefinitely.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.data = []  # list of (pName, pCPU)
+
+        # Data for usage interpolation
+        self.oldData = []   # previous top-10 (pName, usage)
+        self.newData = []   # new top-10 (pName, usage)
+
+        # Animation fraction for usage interpolation (0..1)
+        self.animFrac = 1.0
+        self.animationActive = False
+
+        # We'll run a 2-second usage interpolation at ~60 FPS
+        self.ANIM_DURATION = 2000  # ms
+        self.FPS_INTERVAL = 16     # ~60 fps
+
+        # For the 'gas gas' bounce
+        self.bounceTime = 0.0      # accumulates over time
+        self.bounceSpeed = 2.0     # how fast the bars bounce (cycles per ~2s)
+        self.bounceAmplitude = 5.0 # how many px bars move up/down
+
+        # We'll keep a single timer for both usage interpolation & bouncing
+        self.animTimer = QTimer(self)
+        self.animTimer.timeout.connect(self.onAnimFrame)
+        self.animTimer.start(self.FPS_INTERVAL)  # never stops => indefinite bounce
+
         self.setMinimumSize(400, 300)
 
     def setData(self, data):
-        """Set the list of (processName, cpuPercent) for top 10 processes."""
-        self.data = data[:10]  # top 10
-        self.update()          # trigger repaint
+        """
+        data: a list of (pName, usage) for top-10 processes, sorted descending.
+        We'll animate from oldData to newData over 2 seconds.
+        """
+        # If we've never had oldData, just set them equal
+        if not self.oldData:
+            self.oldData = data[:10]
 
-def paintEvent(self, event):
-    painter = QPainter(self)
-    painter.setRenderHint(QPainter.Antialiasing, True)
+        # newData = top 10
+        self.newData = data[:10]
 
-    rect = self.rect()
-    width = rect.width()
-    height = rect.height()
+        # Start usage interpolation from 0..1
+        self.animFrac = 0.0
+        self.animationActive = True
 
-    barSpacing = 10
-    barHeight = (height - (len(self.data)+1)*barSpacing) / (len(self.data) if self.data else 1)
+    def onAnimFrame(self):
+        """
+        Called ~60 times per second. We do:
+          * usage interpolation if active
+          * continuous bounce
+        Then repaint.
+        """
+        # 1) Bouncing is indefinite
+        step = self.FPS_INTERVAL / 1000.0  # in seconds
+        self.bounceTime += step * self.bounceSpeed  # accumulate bounceTime
 
-    maxCPU = max((pCPU for _, pCPU in self.data), default=1)
-    xOffset = 150  # space on left for text
+        # 2) Usage interpolation if active
+        if self.animationActive:
+            usageStep = self.FPS_INTERVAL / self.ANIM_DURATION  # e.g. 16/2000 => 0.008
+            self.animFrac += usageStep
+            if self.animFrac >= 1.0:
+                self.animFrac = 1.0
+                self.animationActive = False
+                # finalize oldData to newData
+                self.oldData = self.newData
 
-    for i, (pName, pCPU) in enumerate(self.data):
-        topY = barSpacing + i*(barHeight + barSpacing)
-        usageRatio = pCPU / maxCPU if maxCPU > 0 else 0
-        barLen = usageRatio * (width - xOffset - 20)
+        self.update()  # schedule repaint
 
-        # Draw the rounded bar
-        barRect = QRectF(xOffset, topY, barLen, barHeight)
-        pen = QPen(QColor("#007FFF"))
-        pen.setWidthF(1.0)
-        painter.setPen(pen)
-        brush = QBrush(QColor("#00A2FF"))
-        painter.setBrush(brush)
-        painter.drawRoundedRect(barRect, 5, 5)
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
 
-        # Draw the process name on the left (truncate if too long)
-        painter.setPen(Qt.white)
-        painter.setFont(QFont("Conthrax", 12))
-        # Cast coords to int
-        painter.drawText(QPoint(10, int(topY + barHeight * 0.7)), pName[:15])
+        rect = self.rect()
+        width = rect.width()
+        height = rect.height()
 
-        # Draw CPU usage at the right end of the bar
-        usageStr = f"{pCPU:.1f}%"
-        painter.drawText(int(xOffset + barLen + 5), int(topY + barHeight * 0.7), usageStr)
+        # We'll show up to top-10
+        dataCount = max(len(self.newData), len(self.oldData))
+        if dataCount == 0:
+            return
 
+        # We'll do bars thinner => barHeight
+        barSpacing = 10
+        numBars = dataCount
+        # If we want them thinner, let's reduce barHeight further
+        # e.g. barHeight is totalHeight/(2.5 * numBars)
+        totalSpacing = (numBars+1)*barSpacing
+        availableHeight = height - totalSpacing
+        barHeight = availableHeight / (numBars*1.5)  # *1.5 => thinner
+
+        # We'll pad oldData/newData to dataCount length
+        oldPadded = self.oldData + [("",0)]*(dataCount - len(self.oldData))
+        newPadded = self.newData + [("",0)]*(dataCount - len(self.newData))
+
+        # find max usage among old+new => scale bars
+        allUsages = [u for (_,u) in oldPadded] + [u for (_,u) in newPadded]
+        usageMax = max(allUsages) if allUsages else 1
+        if usageMax < 1e-6:
+            usageMax = 1.0
+
+        xOffset = 150  # space on left for text
+        rightMargin = 20
+
+        # We'll reduce the max bar length by 20%
+        lengthFactor = 0.8
+
+        for i in range(dataCount):
+            oldName, oldUsage = oldPadded[i]
+            newName, newUsage = newPadded[i]
+
+            # Interpolate usage
+            usage = oldUsage + self.animFrac*(newUsage - oldUsage)
+
+            # We'll show the new name, truncated to 7 letters
+            if newName:
+                pName = (newName[:7] + "...") if len(newName) > 7 else newName
+            else:
+                pName = (oldName[:7] + "...") if len(oldName) > 7 else oldName
+
+            # Base topY for bar i
+            topY = barSpacing + i*(barHeight + barSpacing)
+
+            # Add a bounce offset => all bars bounce in sync
+            # bounceTime => cycles, sin => up/down in [-1..1]
+            # We'll shift by amplitude * sin(bounceTime)
+            bounceOffset = self.bounceAmplitude * math.sin(self.bounceTime)
+            topY += bounceOffset
+
+            # scale usage => usage/usageMax => fraction => times bar width => times 0.8
+            ratio = usage / usageMax
+            barLen = ratio*(width - xOffset - rightMargin)*lengthFactor
+
+            # draw the bar
+            barRect = QRectF(xOffset, topY, barLen, barHeight)
+            pen = QPen(QColor("#007FFF"))
+            pen.setWidthF(1.0)
+            painter.setPen(pen)
+
+            brush = QBrush(QColor("#00A2FF"))
+            painter.setBrush(brush)
+            painter.drawRoundedRect(barRect, 5, 5)
+
+            # draw name on left
+            painter.setPen(Qt.white)
+            painter.setFont(QFont(sciFiFontName, 12))
+            painter.drawText(
+                QPoint(10, int(topY + barHeight*0.7)),
+                pName
+            )
+
+            # draw usage near right end
+            usageStr = f"{usage:.1f}%"
+            painter.drawText(
+                int(xOffset + barLen + 5),
+                int(topY + barHeight*0.7),
+                usageStr
+            )
 
 # --------------------- The Main ProcessTab Class ---------------------
 class ProcessTab(QWidget):
