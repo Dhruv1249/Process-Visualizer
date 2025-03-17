@@ -5,10 +5,10 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
     QTableWidget, QTableWidgetItem, QHeaderView, QStyleOption, QStyle
 )
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QFontDatabase
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint, QThread, pyqtSignal
-
 sciFiFontName = "Conthrax"
+
 
 # --------------------- Background Worker Thread for Process Data ---------------------
 class ProcessDataWorker(QThread):
@@ -584,7 +584,7 @@ class ProcessTab(QWidget):
         else:
             idx = 2; self.sortDescending = True
 
-        sorted_data = sorted(self.processData, key=lambda x: x[idx], reverse=self.sortDescending)[:50]
+        sorted_data = sorted(self.processData, key=lambda x: x[idx], reverse=self.sortDescending)
         
         if self.currentSubTab == self.btnList and self.isVisible:
             if self.table.rowCount() != len(sorted_data):
