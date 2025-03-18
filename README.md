@@ -42,3 +42,4 @@ The application uses the Conthrax font for optimal UI display. Please download a
 
 After downloading the zip file, unzip the file and run the .otf file and click on intall and it will be automatically installed in your system.
 
+Note: Even if you don't install the font the application will automatically default to Arial as its font.
