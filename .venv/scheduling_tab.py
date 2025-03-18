@@ -39,49 +39,67 @@ class GanttChartWidget(QWidget):
         # Fill chart area with black.
         painter.fillRect(chart_area, QColor("black"))
         
-        # Draw dynamic grid lines on chart area
-        painter.setPen(QPen(QColor(80, 80, 80), 1))  # dark gray grid lines
-        # Vertical grid lines at each time unit.
         # Compute maximum finish time.
         maxFinish = 0
         for proc in self.processSchedule:
             if proc['finish'] > maxFinish:
                 maxFinish = proc['finish']
-        # Total width needed:
-        total_width = left_margin + maxFinish * self.scale + 50
-        # Draw vertical grid lines for each integer time.
+        
+        # Calculate total width needed for the chart
+        total_width = left_margin + maxFinish * self.scale + right_margin
+        
+        # Adjust widget size based on scale and content
+        if total_width > self.width():
+            self.setMinimumWidth(int(total_width))
+        
+        # Draw dynamic grid lines on chart area
+        painter.setPen(QPen(QColor(80, 80, 80), 1))  # dark gray grid lines
+        
+        # Determine appropriate time label interval based on zoom level
+        # When zoomed out, show fewer labels to prevent crowding
+        if self.scale < 5:
+            time_interval = 10
+        elif self.scale < 10:
+            time_interval = 5
+        elif self.scale < 20:
+            time_interval = 2
+        else:
+            time_interval = 1
+            
+        # Draw vertical grid lines for each time unit based on interval
         for t in range(0, int(maxFinish) + 1):
             x = left_margin + t * self.scale
-            # Draw grid line spanning chart area.
+            # Draw grid line spanning chart area
             painter.drawLine(int(x), int(chart_area.top()), int(x), int(chart_area.bottom()))
-            # Draw time labels at the bottom.
-            painter.setFont(QFont("Arial", 8))
-            painter.setPen(QPen(QColor("white")))
-            painter.drawText(int(x)-5, self.height() - bottom_margin + 15, str(t))
-            painter.setPen(QPen(QColor(80,80,80), 1))
+            
+            # Draw time labels at the bottom, but only at appropriate intervals
+            if t % time_interval == 0:
+                painter.setFont(QFont("Arial", 8))
+                painter.setPen(QPen(QColor("white")))
+                painter.drawText(int(x) - 5, self.height() - 15, str(t))
+                painter.setPen(QPen(QColor(80, 80, 80), 1))
         
-        # Draw horizontal grid lines across process rows.
+        # Draw a single horizontal line for the process row
+        # Position it near the bottom of the chart area, just above the time labels
         rowHeight = 30
-        gap = 10
-        total_rows = len(self.processSchedule)
-        # Draw lines for each row boundary inside chart_area.
-        # Since we draw from bottom, the first process is drawn at the bottom row.
-        for i in range(total_rows+1):
-            # compute y coordinate from bottom of chart_area.
-            y = chart_area.bottom() - i * (rowHeight + gap)
-            painter.drawLine(int(chart_area.left()), int(y), int(chart_area.right()), int(y))
+        y = chart_area.bottom() - rowHeight - 10  # Position above time labels
+        painter.drawLine(int(chart_area.left()), int(y + rowHeight/2), int(chart_area.right()), int(y + rowHeight/2))
         
-        # Draw each process bar from bottom upward.
+        # Sort processes by start time to ensure they appear in chronological order
+        sorted_processes = sorted(self.processSchedule, key=lambda proc: proc['start'])
+        
+        # Keep track of which time points have already been displayed to avoid duplicates
+        displayed_times = set()
+        
+        # Draw each process bar linearly, one after another
         painter.setPen(QPen(QColor("black"), 1))
-        for idx, proc in enumerate(self.processSchedule):
-            # Draw processes in reverse order: last in list appears at the top.
-            i = total_rows - idx - 1
+        for proc in sorted_processes:
             start = proc['start']
             finish = proc['finish']
             rect_x = left_margin + start * self.scale
             rect_width = (finish - start) * self.scale
-            # y-coordinate from bottom of chart_area.
-            rect_y = chart_area.bottom() - (i+1) * (rowHeight + gap) + gap
+            # y-coordinate is fixed for all processes (near bottom of chart area)
+            rect_y = y - rowHeight/2
             rect = QRectF(rect_x, rect_y, rect_width, rowHeight)
             painter.setBrush(QColor("blue"))
             painter.drawRect(rect)
@@ -90,11 +108,30 @@ class GanttChartWidget(QWidget):
             painter.setPen(QPen(QColor("white")))
             painter.drawText(rect, Qt.AlignCenter, proc['name'])
             
-            # Optionally, draw start and finish times just below the rectangle edge.
+            # Draw start and finish times just above the rectangle
+            # Use the same interval logic as the bottom time labels
             painter.setFont(QFont("Arial", 8))
             painter.setPen(QPen(QColor("white")))
-            painter.drawText(int(rect_x), int(rect_y - 2), str(start))
-            painter.drawText(int(rect_x + rect_width - 20), int(rect_y - 2), str(finish))
+            
+            # Only show start time if it falls on an interval boundary or it's the first process
+            # AND it hasn't been displayed yet
+            start_str = str(start)
+            if (int(start) % time_interval == 0 or proc == sorted_processes[0]) and start_str not in displayed_times:
+                # Position start time at the left edge of the process
+                painter.drawText(int(rect_x), int(rect_y - 5), start_str)
+                displayed_times.add(start_str)
+            
+            # Only show finish time if it falls on an interval boundary or it's the last process
+            # AND it hasn't been displayed yet
+            finish_str = str(finish)
+            if (int(finish) % time_interval == 0 or proc == sorted_processes[-1]) and finish_str not in displayed_times:
+                # Position finish time at the right edge of the process, with better spacing
+                # Calculate text width to ensure it doesn't overlap with other labels
+                text_width = painter.fontMetrics().width(finish_str)
+                # Position the finish time at the right edge of the process rectangle
+                # Ensure it's fully visible by subtracting the text width
+                painter.drawText(int(rect_x + rect_width - text_width), int(rect_y - 5), finish_str)
+                displayed_times.add(finish_str)
             
         painter.end()
         
@@ -107,7 +144,23 @@ class GanttChartWidget(QWidget):
         else:
             self.scale /= factor**(-delta)
         self.scale = max(1.0, min(self.scale, 50))
+        
+        # Adjust widget size based on new scale
+        self.updateSize()
         self.update()
+    
+    def updateSize(self):
+        # Calculate maximum finish time
+        maxFinish = 0
+        for proc in self.processSchedule:
+            if proc['finish'] > maxFinish:
+                maxFinish = proc['finish']
+        
+        # Calculate required width based on scale
+        required_width = 50 + maxFinish * self.scale + 50  # left_margin + content + right_margin
+        
+        # Set minimum width to ensure all content is visible
+        self.setMinimumWidth(max(self.baseWidth, int(required_width)))
 
 class GanttChartWindow(QDialog):
     def __init__(self, algorithm, processSchedule, parent=None):
@@ -116,14 +169,25 @@ class GanttChartWindow(QDialog):
         self.algorithm = algorithm
         self.processSchedule = processSchedule
         self.setStyleSheet("background-color: black;")
-        # Create a scroll area for the dynamic GanttChartWidget.
+        
+        # Create a scroll area for the dynamic GanttChartWidget
         scrollArea = QScrollArea(self)
         scrollArea.setWidgetResizable(True)
+        scrollArea.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scrollArea.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
         self.chartWidget = GanttChartWidget(algorithm, processSchedule)
         scrollArea.setWidget(self.chartWidget)
+        
+        # Update chart widget size based on initial scale
+        self.chartWidget.updateSize()
+        
         layout = QVBoxLayout(self)
         layout.addWidget(scrollArea)
-        self.setFixedSize(800, 400)
+        
+        # Set a larger initial size for the window
+        self.resize(1200, 600)
+        
 class SchedulingTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -597,7 +661,6 @@ class SchedulingTab(QWidget):
             schedule = round_robin_schedule(processList, quantum)
         else:
             schedule = fcfs_schedule(processList)
-
         # Open the Gantt Chart window with the computed schedule.
         ganttWindow = GanttChartWindow(alg, schedule, self)
         ganttWindow.exec_()
