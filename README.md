@@ -1,3 +1,4 @@
+
 # Process Visualization Tool
 
 The **Process Visualization Tool** is a Python-based desktop application designed to monitor system resources in real-time and simulate CPU scheduling algorithms. It features a user-friendly interface with a modern dark theme, making it both functional and visually appealing.
@@ -6,11 +7,12 @@ The **Process Visualization Tool** is a Python-based desktop application designe
 
 - **System Monitor Dashboard**:
   - Real-time monitoring of CPU, GPU, RAM, and Disk usage with speedometer-style gauges.
-  - Displays the top 50 running processes by CPU usage in a sortable table.
-  - Gauges are styled like Ookla Speedtest, with a left-to-right arc and color gradients (green to red) indicating usage levels.
+  - Displays the current running processes by CPU usage in a sortable table.
+  - Displays the top 10 running processes by CPU and RAM usage in a bar graph.
+
 
 - **Process Scheduling Simulator**:
-  - Simulate CPU scheduling algorithms: First-Come-First-Serve (FCFS), Shortest Job First (SJF), and Round Robin.
+  - Simulate CPU scheduling algorithms: FCFS, SJF, and Round Robin.
   - Input the number of processes, arrival times, burst times, and (for Round Robin) the time quantum.
   - Visualize the scheduling process with a Gantt chart and view process details in a table.
 
@@ -23,3 +25,13 @@ To run the Process Visualization Tool, install the required Python libraries usi
 
 ```bash
 pip install -r requiremnt.txt
+```
+
+### Conthrax Font Installation
+
+The application uses the Conthrax font for optimal UI display. Please download and install the Conthrax font by visiting the following link:
+
+(https://dl.dafont.com/dl/?f=conthrax)
+
+After downloading the zip file, unzip the file and run the .otf file and click on intall and it will be automatically installed in your system.
+
