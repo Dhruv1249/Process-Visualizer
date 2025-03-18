@@ -23,8 +23,15 @@ The **Process Visualization Tool** is a Python-based desktop application designe
 
 To run the Process Visualization Tool, install the required Python libraries using the following command:
 
+1) If you don't have a NVIDIA GPU:
+
 ```bash
-pip install -r requiremnt.txt
+pip install PyQt5 psutil 
+```
+2) If have a NVIDIA GPU available
+
+```bash
+pip install PyQt5 psutil pynvml
 ```
 
 ### Conthrax Font Installation

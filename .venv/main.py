@@ -42,17 +42,20 @@ def get_disk_usage_percent(drive='C:'):
     return psutil.disk_usage(drive).percent
 
 def get_nvidia_gpu_usage_percent(gpu_index=0):
-    if not NVML_AVAILABLE:
-        return 0
-    nvmlInit()
-    count = nvmlDeviceGetCount()
-    if gpu_index >= count:
+    try:
+        if not NVML_AVAILABLE:
+            return 0
+        nvmlInit()
+        count = nvmlDeviceGetCount()
+        if gpu_index >= count:
+            nvmlShutdown()
+            return 0
+        handle = nvmlDeviceGetHandleByIndex(gpu_index)
+        util = nvmlDeviceGetUtilizationRates(handle)
         nvmlShutdown()
+        return util.gpu  # 0..100
+    except:
         return 0
-    handle = nvmlDeviceGetHandleByIndex(gpu_index)
-    util = nvmlDeviceGetUtilizationRates(handle)
-    nvmlShutdown()
-    return util.gpu  # 0..100
 
 sciFiFontName = "Conthrax"  # Replace with "Arial" if Conthrax is unavailable
 
