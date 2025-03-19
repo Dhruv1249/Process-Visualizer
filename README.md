@@ -26,12 +26,12 @@ To run the Process Visualization Tool, install the required Python libraries usi
 1) If you don't have a NVIDIA GPU:
 
 ```bash
-pip install PyQt5 psutil 
+pip install PyQt5 psutil pyqtgraph
 ```
 2) If have a NVIDIA GPU available
 
 ```bash
-pip install PyQt5 psutil pynvml
+pip install PyQt5 psutil pyqtgraph pynvml
 ```
 
 ### Conthrax Font Installation
