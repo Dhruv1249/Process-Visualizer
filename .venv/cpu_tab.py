@@ -7,8 +7,8 @@ from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QGridLayout, QTableWidget, QTableWidgetItem, QHeaderView
 
 class CpuTab(QWidget):
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def _init_(self, parent=None):
+        super()._init_(parent)
         self.setStyleSheet("background-color: #000000; color: #FFFFFF;")
         
         layout = QVBoxLayout(self)
@@ -133,3 +133,10 @@ class CpuTab(QWidget):
             item2.setFont(QFont("Conthrax", 16))
             self.cpuInfoTable.setItem(row, 0, item1)
             self.cpuInfoTable.setItem(row, 1, item2)
+        
+if _name_ == "_main_":
+    from PyQt5.QtWidgets import QApplication
+    app = QApplication(sys.argv)
+    tab = CpuTab()
+    tab.show()
+    sys.exit(app.exec_())
