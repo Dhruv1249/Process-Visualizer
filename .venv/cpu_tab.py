@@ -1,3 +1,4 @@
+
 import sys
 import psutil
 import pyqtgraph as pg
@@ -70,28 +71,35 @@ class CpuTab(QWidget):
         self.cpuInfoTable.setShowGrid(False)
         layout.addWidget(self.cpuInfoTable, stretch=1)
         
+        # Initialize a persistent time counter for proper x-axis values
+        self.timeCounter = 0
+
         self.timer = QTimer()
         self.timer.setInterval(2000)
         self.timer.timeout.connect(self.updateCpuStats)
         self.timer.start()
     
     def updateCpuStats(self):
+        # Update CPU usage graph
         cpu_percent = psutil.cpu_percent()
         self.cpuUsageLabel.setText(f"CPU Usage: {cpu_percent:.2f}%")
         
+        # Maintain fixed history length
         if len(self.cpuUsageHistory) >= self.maxHistory:
             self.cpuUsageHistory.pop(0)
             self.timeHistory.pop(0)
         
+        # Append new data point using a continuously increasing time counter
         self.cpuUsageHistory.append(cpu_percent)
-        self.timeHistory.append(len(self.timeHistory))
+        self.timeHistory.append(self.timeCounter)
+        self.timeCounter += 1
         self.cpuUsagePlot.setData(self.timeHistory, self.cpuUsageHistory)
         
         if self.cpuUsageHistory:
             self.cpuUsageTextItem.setText(f"{cpu_percent:.2f}%")
             self.cpuUsageTextItem.setPos(self.timeHistory[-1], self.cpuUsageHistory[-1])
         
-        # CPU Clock Speed
+        # Update CPU clock speed graph
         try:
             cpu_freq = psutil.cpu_freq().current / 1000  # Convert MHz to GHz
             self.cpuClockLabel.setText(f"CPU Clock Speed: {cpu_freq:.2f} GHz")
@@ -99,16 +107,17 @@ class CpuTab(QWidget):
                 self.cpuClockHistory.pop(0)
             self.cpuClockHistory.append(cpu_freq)
             self.cpuClockPlot.setData(self.timeHistory, self.cpuClockHistory)
-        except:
+        except Exception:
             self.cpuClockLabel.setText("CPU Clock Speed: N/A")
         
-        # CPU Info Table
+        # Update CPU Information Table
+        freq = psutil.cpu_freq()
+        # Show physical & logical cores, base frequency (using min as base), and current frequency.
         cpu_info = [
             ("Physical Cores:", psutil.cpu_count(logical=False)),
             ("Logical Cores:", psutil.cpu_count(logical=True)),
-            ("Max Frequency (GHz):", f"{psutil.cpu_freq().max / 1000:.2f} GHz"),
-            ("Min Frequency (GHz):", f"{psutil.cpu_freq().min / 1000:.2f} GHz"),
-            ("Current Frequency (GHz):", f"{psutil.cpu_freq().current / 1000:.2f} GHz"),
+            ("Base Frequency (GHz):", f"{freq.max / 1000:.2f} GHz"),
+            ("Current Frequency (GHz):", f"{freq.current / 1000:.2f} GHz"),
             ("CPU Usage (%):", f"{cpu_percent:.2f}%"),
             ("Processor Architecture:", "x86_64"),
             ("Threads Per Core:", "2")
