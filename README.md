@@ -21,11 +21,11 @@ The **Process Visualization Tool** is a Python-based desktop application designe
 
 ## Installation
 
-##.exe File
+## .exe File
 
 To run the .exe file just download the exe file from the exe file and run it.
 
-##For the source code
+## For the source code
 
 To run the Process Visualization Tool, install the required Python libraries using the following command:
 
