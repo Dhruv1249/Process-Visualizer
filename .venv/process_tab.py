@@ -1,12 +1,15 @@
+
 import psutil
 import math
 import time
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFrame,
-    QTableWidget, QTableWidgetItem, QHeaderView, QStyleOption, QStyle
+    QTableWidget, QTableWidgetItem, QHeaderView, QStyleOption, QStyle,
+    QMenu, QMessageBox, QApplication
 )
-from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QFontDatabase
+from PyQt5.QtGui import QFont, QPainter, QColor, QPen, QBrush, QFontDatabase, QCursor
 from PyQt5.QtCore import Qt, QTimer, QRectF, QPoint, QThread, pyqtSignal
+
 sciFiFontName = "Conthrax"
 
 
@@ -397,6 +400,7 @@ class ProcessTab(QWidget):
         self.processData = []  # Cached process data
         self.lastUpdateTime = 0
         self.updatePending = False
+        self.pauseUpdates = False  # Flag to pause UI updates when context menu is active or Ctrl is held.
         
         self.dataWorker = ProcessDataWorker()
         self.dataWorker.dataReady.connect(self.onProcessDataReady)
@@ -488,7 +492,7 @@ class ProcessTab(QWidget):
         self.updatePending = True
 
     def updateUI(self):
-        if not self.isVisible or not self.updatePending:
+        if self.pauseUpdates or not self.isVisible or not self.updatePending:
             return
             
         self.updatePending = False
@@ -556,6 +560,8 @@ class ProcessTab(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setFont(QFont(sciFiFontName, 12))
         self.table.setRowCount(50)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)  # Enable custom context menu
+        self.table.customContextMenuRequested.connect(self.showProcessContextMenu)  # Connect to our handler
         layout.addWidget(self.table)
 
         self.btnColProcess.clicked.connect(lambda: self.sortDataBy("process"))
@@ -596,6 +602,8 @@ class ProcessTab(QWidget):
                     itemName = QTableWidgetItem(str(pName))
                     itemName.setFont(QFont(sciFiFontName, 12))
                     itemName.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                    # Store the PID as item data for context menu actions
+                    itemName.setData(Qt.UserRole, pID)
                     self.table.setItem(row, 0, itemName)
 
                 current_pid = self.table.item(row, 1)
@@ -603,6 +611,8 @@ class ProcessTab(QWidget):
                     itemPID = QTableWidgetItem(str(pID))
                     itemPID.setFont(QFont(sciFiFontName, 12))
                     itemPID.setTextAlignment(Qt.AlignCenter)
+                    # Store the PID as item data for context menu actions
+                    itemPID.setData(Qt.UserRole, pID)
                     self.table.setItem(row, 1, itemPID)
 
                 current_cpu = self.table.item(row, 2)
@@ -611,6 +621,8 @@ class ProcessTab(QWidget):
                     itemCPU = QTableWidgetItem(cpu_text)
                     itemCPU.setFont(QFont(sciFiFontName, 12))
                     itemCPU.setTextAlignment(Qt.AlignCenter)
+                    # Store the PID as item data for context menu actions
+                    itemCPU.setData(Qt.UserRole, pID)
                     self.table.setItem(row, 2, itemCPU)
 
                 current_ram = self.table.item(row, 3)
@@ -619,6 +631,8 @@ class ProcessTab(QWidget):
                     itemRAM = QTableWidgetItem(ram_text)
                     itemRAM.setFont(QFont(sciFiFontName, 12))
                     itemRAM.setTextAlignment(Qt.AlignCenter)
+                    # Store the PID as item data for context menu actions
+                    itemRAM.setData(Qt.UserRole, pID)
                     self.table.setItem(row, 3, itemRAM)
 
     def sortDataBy(self, key):
@@ -636,153 +650,222 @@ class ProcessTab(QWidget):
         self.sortKey = key
         self.populateTable()
 
-    # -------------------- PART 2: The "Graph" Sub-Sub-Tab --------------------
+    # -------------------- Process Control Functions --------------------
+    def showProcessContextMenu(self, position):
+        """
+        Show a sleek context menu when right-clicking on a process in the table.
+        This menu uses the Conthrax font and cool styling. Additionally, list updates
+        are paused when the menu is active or when the Ctrl key is held.
+        """
+        # Pause updates if Ctrl is held or on right-click
+        if QApplication.keyboardModifiers() & Qt.ControlModifier:
+            self.pauseUpdates = True
+        else:
+            self.pauseUpdates = True
+
+        # Get the row at the clicked position
+        row = self.table.rowAt(position.y())
+        if row < 0:
+            self.pauseUpdates = False
+            return  # No valid row clicked
+        
+        # Get the process PID from the clicked row
+        item = self.table.item(row, 0)  # Get item from first column
+        if not item:
+            self.pauseUpdates = False
+            return
+        
+        pid = item.data(Qt.UserRole)
+        process_name = item.text()
+        
+        # Create sleek context menu using Conthrax font and cool styling
+        menu = QMenu()
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2B2B2B;
+                border: 1px solid #444444;
+                font-family: Conthrax;
+                font-size: 16px;
+                color: #FFFFFF;
+            }
+            QMenu::item {
+                padding: 10px 25px;
+            }
+            QMenu::item:selected {
+                background-color: #00A2FF;
+            }
+        """)
+        
+        # Add actions
+        pauseAction = menu.addAction("Pause Process")
+        resumeAction = menu.addAction("Resume Process")
+        menu.addSeparator()
+        killAction = menu.addAction("Kill Process")
+        
+        # Show menu and get selected action
+        action = menu.exec_(QCursor.pos())
+        
+        # Handle action
+        if action == pauseAction:
+            self.pauseProcess(pid, process_name)
+        elif action == resumeAction:
+            self.resumeProcess(pid, process_name)
+        elif action == killAction:
+            self.killProcess(pid, process_name)
+        
+        # Unpause updates if Ctrl is not held
+        if not (QApplication.keyboardModifiers() & Qt.ControlModifier):
+            self.pauseUpdates = False
+
+    def pauseProcess(self, pid, process_name):
+        """Pause a process by suspending it"""
+        try:
+            process = psutil.Process(pid)
+            process.suspend()
+            QMessageBox.information(self, "Process Paused", 
+                                   f"Process '{process_name}' (PID: {pid}) has been paused.")
+        except psutil.NoSuchProcess:
+            QMessageBox.warning(self, "Error", f"Process '{process_name}' (PID: {pid}) no longer exists.")
+        except psutil.AccessDenied:
+            QMessageBox.warning(self, "Access Denied", 
+                               f"Cannot pause process '{process_name}' (PID: {pid}). Access denied.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error pausing process: {str(e)}")
+
+    def resumeProcess(self, pid, process_name):
+        """Resume a paused process"""
+        try:
+            process = psutil.Process(pid)
+            process.resume()
+            QMessageBox.information(self, "Process Resumed", 
+                                   f"Process '{process_name}' (PID: {pid}) has been resumed.")
+        except psutil.NoSuchProcess:
+            QMessageBox.warning(self, "Error", f"Process '{process_name}' (PID: {pid}) no longer exists.")
+        except psutil.AccessDenied:
+            QMessageBox.warning(self, "Access Denied", 
+                               f"Cannot resume process '{process_name}' (PID: {pid}). Access denied.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error resuming process: {str(e)}")
+
+    def killProcess(self, pid, process_name):
+        """Kill a process"""
+        try:
+            process = psutil.Process(pid)
+            process.kill()
+            QMessageBox.information(self, "Process Killed", 
+                                   f"Process '{process_name}' (PID: {pid}) has been killed.")
+        except psutil.NoSuchProcess:
+            QMessageBox.warning(self, "Error", f"Process '{process_name}' (PID: {pid}) no longer exists.")
+        except psutil.AccessDenied:
+            QMessageBox.warning(self, "Access Denied", 
+                               f"Cannot kill process '{process_name}' (PID: {pid}). Access denied.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error killing process: {str(e)}")
+
+    # -------------------- GRAPH SUB-TAB METHODS --------------------
     def buildGraphUI(self):
+        """Builds and returns the widget for the Graph sub-tab."""
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        self.currentGraphSubTab = None
-
-        graphTopLayout = QHBoxLayout()
-        graphTopLayout.setContentsMargins(10, 0, 0, 0)
-        graphTopLayout.setSpacing(0)
-
+        
+        # Top buttons for CPU and RAM graphs
+        topButtonLayout = QHBoxLayout()
+        topButtonLayout.setContentsMargins(0, 0, 0, 0)
+        topButtonLayout.setSpacing(0)
+        
         self.btnCPUGraph = QPushButton("CPU")
         self.btnRAMGraph = QPushButton("RAM")
-
-        self.graphStyleNormal = f"""
-            QPushButton {{
-                color: #FFFFFF;
-                font-family: {sciFiFontName};
-                font-size: 20px;
-                padding: 12px;
-                background-color: transparent;
-                border: none;
-            }}
-            QPushButton:hover {{
-                background-color: #333333;
-            }}
-        """
-        self.graphStyleSelected = f"""
-            QPushButton {{
-                color: #FFFFFF;
-                font-family: {sciFiFontName};
-                font-size: 20px;
-                padding: 12px;
-                background-color: #1A1A1A;
-                border-left: 4px solid #00A2FF;
-            }}
-        """
-
-        sep_graph_vertical = QFrame()
-        sep_graph_vertical.setFixedWidth(1)
-        sep_graph_vertical.setStyleSheet("background-color: white;")
-
-        self.btnCPUGraph.setStyleSheet(self.graphStyleNormal)
-        self.btnRAMGraph.setStyleSheet(self.graphStyleNormal)
-
-        graphTopLayout.addWidget(self.btnCPUGraph)
-        graphTopLayout.addWidget(sep_graph_vertical)
-        graphTopLayout.addWidget(self.btnRAMGraph)
-        layout.addLayout(graphTopLayout)
-
-        sep_graph_horizontal = QFrame()
-        sep_graph_horizontal.setFixedHeight(1)
-        sep_graph_horizontal.setStyleSheet("background-color: white;")
-        layout.addWidget(sep_graph_horizontal)
-
-        self.graphSubContentLayout = QVBoxLayout()
-        self.graphSubContentLayout.setContentsMargins(0, 10, 0, 0)
-        layout.addLayout(self.graphSubContentLayout)
-
-        self.cpuBarGraphWidget = CPUBarGraphWidget()
-        # Replace the RAM placeholder with our new bar graph widget:
-        self.ramBarGraphWidget = RAMBarGraphWidget()
-
+        for button in [self.btnCPUGraph, self.btnRAMGraph]:
+            button.setCheckable(True)
+            button.setStyleSheet(self.styleNormal)
+        self.btnCPUGraph.setChecked(True)
+        self.currentGraphSubTab = self.btnCPUGraph
+        
         self.btnCPUGraph.clicked.connect(lambda: self.setCurrentGraphSubTab(self.btnCPUGraph))
         self.btnRAMGraph.clicked.connect(lambda: self.setCurrentGraphSubTab(self.btnRAMGraph))
-
-        self.setCurrentGraphSubTab(self.btnCPUGraph)
-
+        
+        topButtonLayout.addWidget(self.btnCPUGraph)
+        topButtonLayout.addWidget(self.btnRAMGraph)
+        layout.addLayout(topButtonLayout)
+        
+        # Graph container area
+        self.graphContainer = QWidget()
+        graphLayout = QVBoxLayout(self.graphContainer)
+        graphLayout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.graphContainer)
+        
+        # Instantiate graph widgets
+        self.cpuGraph = CPUBarGraphWidget()
+        self.ramGraph = RAMBarGraphWidget()
+        
+        # Add default graph (CPU)
+        graphLayout.addWidget(self.cpuGraph)
+        
         return container
 
-    def setCurrentGraphSubTab(self, btn):
-        self.currentGraphSubTab = btn
-        self.updateGraphSubTabStyles()
+    def setCurrentGraphSubTab(self, tabButton):
+        """Switch between the CPU and RAM graph views."""
+        self.currentGraphSubTab = tabButton
+        if tabButton == self.btnCPUGraph:
+            self.btnCPUGraph.setChecked(True)
+            self.btnRAMGraph.setChecked(False)
+            # Apply selected styling with white border to CPU tab and normal styling with white border to RAM tab
+            self.btnCPUGraph.setStyleSheet(f"{self.styleSelected}; border: 1px solid white;")
+            self.btnRAMGraph.setStyleSheet(f"{self.styleNormal}; border: 1px solid white;")
+            # Clear graphContainer and add CPU graph
+            layout = self.graphContainer.layout()
+            while layout.count():
+                widgetToRemove = layout.takeAt(0).widget()
+                if widgetToRemove is not None:
+                    widgetToRemove.setParent(None)
+            layout.addWidget(self.cpuGraph)
+        elif tabButton == self.btnRAMGraph:
+            self.btnCPUGraph.setChecked(False)
+            self.btnRAMGraph.setChecked(True)
+            # Apply selected styling with white border to RAM tab and normal styling with white border to CPU tab
+            self.btnCPUGraph.setStyleSheet(f"{self.styleNormal}; border: 1px solid white;")
+            self.btnRAMGraph.setStyleSheet(f"{self.styleSelected}; border: 1px solid white;")
+            layout = self.graphContainer.layout()
+            while layout.count():
+                widgetToRemove = layout.takeAt(0).widget()
+                if widgetToRemove is not None:
+                    widgetToRemove.setParent(None)
+            layout.addWidget(self.ramGraph)
 
-        for i in reversed(range(self.graphSubContentLayout.count())):
-            item = self.graphSubContentLayout.itemAt(i)
-            w = item.widget()
-            if w:
-                w.setParent(None)
+    def updateCPUGraph(self):
+        """Update CPU graph with top CPU usage processes."""
+        if not self.processData:
+            return
+        sorted_cpu = sorted(self.processData, key=lambda x: x[2], reverse=True)
+        # Map to (processName, CPU%) tuple for top 10 processes
+        data = [(pName, pCPU) for (pName, pID, pCPU, pRAM) in sorted_cpu[:10]]
+        self.cpuGraph.setData(data)
 
-        if btn == self.btnCPUGraph:
-            self.graphSubContentLayout.addWidget(self.cpuBarGraphWidget)
-            if self.processData and self.isVisible:
-                self.updateCPUGraph()
-        elif btn == self.btnRAMGraph:
-            self.graphSubContentLayout.addWidget(self.ramBarGraphWidget)
-            if self.processData and self.isVisible:
-                self.updateRAMGraph()
+    def updateRAMGraph(self):
+        """Update RAM graph with top RAM usage processes."""
+        if not self.processData:
+            return
+        sorted_ram = sorted(self.processData, key=lambda x: x[3], reverse=True)
+        data = [(pName, pRAM) for (pName, pID, pCPU, pRAM) in sorted_ram[:10]]
+        self.ramGraph.setData(data)
 
-    def updateGraphSubTabStyles(self):
-        if self.currentGraphSubTab == self.btnCPUGraph:
-            self.btnCPUGraph.setStyleSheet(self.graphStyleSelected)
-            self.btnRAMGraph.setStyleSheet(self.graphStyleNormal)
-        else:
-            self.btnCPUGraph.setStyleSheet(self.graphStyleNormal)
-            self.btnRAMGraph.setStyleSheet(self.graphStyleSelected)
-
-    # -------------------- PART 3: Switching between "List" and "Graph" --------------------
-    def setCurrentSubTab(self, btn):
-        self.currentSubTab = btn
-        self.updateSubTabStyles()
-
-        for i in reversed(range(self.subContentLayout.count())):
-            item = self.subContentLayout.itemAt(i)
-            w = item.widget()
-            if w:
-                w.setParent(None)
-
-        if btn == self.btnList:
+    # -------------------- MAIN TAB SWITCHING METHOD --------------------
+    def setCurrentSubTab(self, tabButton):
+        """Switch between the List and Graph sub-tabs."""
+        self.currentSubTab = tabButton
+        # Clear the subContentLayout
+        while self.subContentLayout.count():
+            item = self.subContentLayout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.setParent(None)
+        if tabButton == self.btnList:
             self.subContentLayout.addWidget(self.listWidget)
-            if self.processData and self.isVisible:
-                self.populateTable()
-        else:
-            self.subContentLayout.addWidget(self.graphWidget)
-            if self.processData and self.isVisible:
-                if self.currentGraphSubTab == self.btnCPUGraph:
-                    self.updateCPUGraph()
-                elif self.currentGraphSubTab == self.btnRAMGraph:
-                    self.updateRAMGraph()
-
-    def updateSubTabStyles(self):
-        if self.currentSubTab == self.btnList:
             self.btnList.setStyleSheet(self.styleSelected)
             self.btnGraph.setStyleSheet(self.styleNormal)
-        else:
-            self.btnList.setStyleSheet(self.styleNormal)
+        elif tabButton == self.btnGraph:
+            self.subContentLayout.addWidget(self.graphWidget)
             self.btnGraph.setStyleSheet(self.styleSelected)
-
-    # -------------------- PART 4: Updating the Graphs --------------------
-    def updateCPUGraph(self):
-        """Update the CPU graph with the top 10 processes by CPU usage."""
-        if not self.processData or not self.isVisible:
-            return
-            
-        cpu_data = [(name, cpu) for name, _, cpu, _ in self.processData]
-        cpu_data.sort(key=lambda x: x[1], reverse=True)
-        
-        self.cpuBarGraphWidget.setData(cpu_data[:10])
-        
-    def updateRAMGraph(self):
-        """Update the RAM graph with the top 10 processes by RAM usage."""
-        if not self.processData or not self.isVisible:
-            return
-            
-        ram_data = [(name, ram) for name, _, _, ram in self.processData]
-        ram_data.sort(key=lambda x: x[1], reverse=True)
-        
-        self.ramBarGraphWidget.setData(ram_data[:10])
+            self.btnList.setStyleSheet(self.styleNormal)

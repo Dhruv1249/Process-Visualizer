@@ -52,8 +52,8 @@ class dial(QWidget):
    
     valueChanged = pyqtSignal(float)
 
-    def _init_(self, title="CPU Usage", parent=None):
-        super()._init_(parent)
+    def __init__(self, title="CPU Usage", parent=None):
+        super().__init__(parent)
         self._value = 0.0
         self._maxValue = 100.0
         self.thickness = 25
@@ -116,7 +116,7 @@ class dial(QWidget):
         painter.setFont(QFont(mainFont, 14, QFont.Bold))
         painter.drawText(cx + 15, cy + 30, self.title)
 
-class MainWindow(QMainWindow):
+class window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("OS Process Visualizer")
@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
     def showTab(self, index, button):
         self.stack.setCurrentIndex(index)
         self.currentTab = button
-        self.updateTabStyles()
+        self.upTb()
         if index == 0:  # Overview tab
             self.timer.start()
         else:
@@ -386,7 +386,7 @@ class MainWindow(QMainWindow):
         anim_disk.start(QPropertyAnimation.DeleteWhenStopped)
         self._animRefs.append(anim_disk)
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     app = QApplication(sys.argv)
     w = window()
     w.showMaximized()
