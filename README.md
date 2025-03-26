@@ -21,6 +21,12 @@ The **Process Visualization Tool** is a Python-based desktop application designe
 
 ## Installation
 
+##.exe File
+
+To run the .exe file just download the exe file from the exe file and run it.
+
+##For the source code
+
 To run the Process Visualization Tool, install the required Python libraries using the following command:
 
 1) If you don't have a NVIDIA GPU:
@@ -42,4 +48,4 @@ The application uses the Conthrax font for optimal UI display. Please download a
 
 After downloading the zip file, unzip the file and run the .otf file and click on intall and it will be automatically installed in your system.
 
-Note: Even if you don't install the font the application will automatically default to Arial as its font.
+Note: Even if you don't install the font the application will still work and automatically default its font to Arial.
