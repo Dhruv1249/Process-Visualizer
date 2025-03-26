@@ -128,7 +128,6 @@ class window(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Sidebar
         self.menuf = QWidget()
         self.menuf.setStyleSheet("background-color: #000000; font-family: Conthrax;")
         self.menuf.setFixedWidth(280)
@@ -180,13 +179,11 @@ class window(QMainWindow):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack, stretch=1)
 
-        # 1) Create the Overview tab with the gauges
         self.ovWid = QWidget()
         ovLayout = QVBoxLayout(self.ovWid)
         ovLayout.setContentsMargins(20, 20, 20, 20)
         ovLayout.setSpacing(20)
 
-        # Overview header
         header_layout = QHBoxLayout()
         title_label = QLabel("OS Process Visualizer")
         title_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
@@ -197,7 +194,6 @@ class window(QMainWindow):
         header_layout.addStretch()
         ovLayout.addLayout(header_layout)
 
-        # Gauges grid
         grid = QGridLayout()
 
         self.cpuGauge = dial("CPU Usage")
@@ -274,17 +270,14 @@ class window(QMainWindow):
         self.schedTab = SchedulingTab(self)
         self.stack.addWidget(self.schedTab)
 
-        # Connect signals for the gauge
         self.cpuGauge.valueChanged.connect(lambda v: self.cpuLabel.setText(f"{v:.2f}%"))
         self.ramGauge.valueChanged.connect(lambda v: self.ramLabel.setText(f"{v:.2f}%"))
         self.gpuGauge.valueChanged.connect(lambda v: self.gpuLabel.setText(f"{v:.2f}%"))
         self.diskGauge.valueChanged.connect(lambda v: self.diskLabel.setText(f"{v:.2f}%"))
 
-        # The currently selected tab is "Overview"
         self.currentTab = self.btnOv
         self.upTb()
 
-        # Connect tab buttons => each sets the stack index
         self.btnOv.clicked.connect(lambda: self.showTab(0, self.btnOv))
         self.btnCPU.clicked.connect(lambda: self.showTab(1, self.btnCPU))
         self.btnRAM.clicked.connect(lambda: self.showTab(2, self.btnRAM))
@@ -292,7 +285,6 @@ class window(QMainWindow):
         self.btnProcesses.clicked.connect(lambda: self.showTab(4, self.btnProcesses))
         self.btnSched.clicked.connect(lambda: self.showTab(5, self.btnSched))
 
-        # Timer for usage updates
         self.timer = QTimer(self)
         self.timer.setInterval(2000)
         self.timer.timeout.connect(self.updateUsages)
@@ -332,7 +324,6 @@ class window(QMainWindow):
                     }
                 """)
 
-    #function for switching tabs in the stack widget
     def showTab(self, index, button):
         self.stack.setCurrentIndex(index)
         self.currentTab = button
